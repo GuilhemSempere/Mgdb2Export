@@ -212,8 +212,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     	                    Collection<VariantRunData> runs = variantDataChunkMap.get(variant);
     	                    if (runs != null) {
     	                        for (VariantRunData run : runs) {
-    	    						for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-    	    							SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+    	    						for (Integer sampleId : run.getGenotypes().keySet()) {
     	                                String individualId = sampleIdToIndividualMap.get(sampleId);
     	                                List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
     	                                if (storedIndividualGenotypes == null) {
@@ -221,10 +220,10 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     	                                    individualGenotypes.put(individualId, storedIndividualGenotypes);
     	                                }
     	                                
-    	    							if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+    	    							if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
     	    								continue;	// skip genotype
 
-    	                                storedIndividualGenotypes.add(sampleGenotype.getCode());
+    	                                storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
     	                            }
     	                        }
     	                    }
@@ -312,7 +311,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		
     		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
     		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()) / AsyncExportTool.WRITING_QUEUE_CAPACITY);
-    		try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc(nAssemblyId)).sort(sortDoc(nAssemblyId)).noCursorTimeout(true).batchSize(nQueryChunkSize ).iterator()) {
+    		try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc(nAssemblyId)).sort(sortDoc(nAssemblyId)).noCursorTimeout(true).collation(collationObj).batchSize(nQueryChunkSize ).iterator()) {
 	    		AsyncExportTool syncExportTool = new AsyncExportTool(markerCursor, markerCount, nQueryChunkSize, mongoTemplate, samplesToExport, dataOutputHandler, progress);
 	    		syncExportTool.launch();
 	

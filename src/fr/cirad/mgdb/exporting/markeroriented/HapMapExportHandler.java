@@ -49,7 +49,6 @@ import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
-import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
@@ -173,20 +172,18 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                Collection<VariantRunData> runs = variantDataChunkMap.get(variant);
 		                if (runs != null) {
 		                    for (VariantRunData run : runs) {
-								for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+								for (Integer sampleId : run.getGenotypes().keySet()) {
 									String individualId = sampleIdToIndividualMap.get(sampleId);
 		                            
-									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
 										continue;	// skip genotype
 									
-		                            String gtCode = sampleGenotype.getCode();
 		                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
 		                            if (storedIndividualGenotypes == null) {
 		                                storedIndividualGenotypes = new ArrayList<String>();
 		                                individualGenotypes.put(individualId, storedIndividualGenotypes);
 		                            }
-		                            storedIndividualGenotypes.add(gtCode);
+		                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
 		                        }
 		                    }
 		                }

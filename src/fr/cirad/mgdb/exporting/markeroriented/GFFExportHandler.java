@@ -93,7 +93,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 	 * @see fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.List, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, int, int, java.util.Map)
      */
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception 
+    public void exportData(OutputStream outputStream, String sModule, int nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception 
     {
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
@@ -149,7 +149,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 						String variantId = variant.getId();
 		                List<String> variantDataOrigin = new ArrayList<>();
 		                Map<String, List<String>> individualGenotypes = new TreeMap<>(new AlphaNumericComparator<String>());
-		                if (variant.getReferencePosition() == null)
+		                if (variant.getReferencePosition(nAssemblyId) == null)
 		                	unassignedMarkers.add(variantId);
 		                
 		                if (markerSynonyms != null) {
@@ -161,26 +161,25 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                Collection<VariantRunData> runs = variantDataChunkMap.get(variant);
 		                if (runs != null) {
 		                    for (VariantRunData run : runs) {
-								for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
-		                            String individualId = sampleIdToIndividualMap.get(sampleId);
-									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+								for (Integer sampleId : run.getGenotypes().keySet()) {
+									String individualId = sampleIdToIndividualMap.get(sampleId);
+		                            
+									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
 										continue;	// skip genotype
 
-		                            String gtCode = sampleGenotype.getCode();
 		                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
 		                            if (storedIndividualGenotypes == null) {
 		                                storedIndividualGenotypes = new ArrayList<>();
 		                                individualGenotypes.put(individualId, storedIndividualGenotypes);
 		                            }
-		                            storedIndividualGenotypes.add(gtCode);
+		                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
 		                        }
 		                    }
 		                }
 
 		                String refAllele = variant.getKnownAlleleList().get(0);
-		                String chrom = variant.getReferencePosition() == null ? "0" : variant.getReferencePosition().getSequence();
-		                long start = variant.getReferencePosition() == null ? 0 : variant.getReferencePosition().getStartSite();
+		                String chrom = variant.getReferencePosition(nAssemblyId) == null ? "0" : variant.getReferencePosition(nAssemblyId).getSequence();
+		                long start = variant.getReferencePosition(nAssemblyId) == null ? 0 : variant.getReferencePosition(nAssemblyId).getStartSite();
 		                long end = Type.SNP.equals(variant.getType()) ? start : start + refAllele.length() - 1;
 		                sb.append(chrom + "\t" + StringUtils.join(variantDataOrigin, ";") /*source*/ + "\t" + typeToOntology.get(variant.getType()) + "\t" + start + "\t" + end + "\t" + "." + "\t" + "+" + "\t" + "." + "\t");
 		                Comparable syn = markerSynonyms == null ? null : markerSynonyms.get(variant.getId());
@@ -272,7 +271,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
         
 		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
 		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()) / AsyncExportTool.WRITING_QUEUE_CAPACITY);
-		try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc).sort(sortDoc).noCursorTimeout(true).collation(collationObj).batchSize(nQueryChunkSize).iterator()) {
+		try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc(nAssemblyId)).sort(sortDoc(nAssemblyId)).noCursorTimeout(true).collation(collationObj).batchSize(nQueryChunkSize).iterator()) {
 			AsyncExportTool syncExportTool = new AsyncExportTool(markerCursor, markerCount, nQueryChunkSize, mongoTemplate, samplesToExport, dataOutputHandler, progress);
 			syncExportTool.launch();
 	
