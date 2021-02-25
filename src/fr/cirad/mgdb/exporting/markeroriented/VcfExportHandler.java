@@ -55,7 +55,9 @@ import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.Sequence;
 import fr.cirad.mgdb.model.mongo.maintypes.SequenceStats;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
@@ -284,23 +286,36 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			HashMap<Integer, Object /*phID*/> phasingIDsBySample = new HashMap<>();
 			
 			final VariantContextWriter finalVariantContextWriter = writer;
-			AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>>() {				
+			AbstractDataOutputHandler<Integer, LinkedHashMap> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap>() {				
 				@Override
 				public Void call() {
-					for (VariantData variant : variantDataChunkMap.keySet())
+					for (Object variant : variantDataChunkMap.keySet())
 					{
-						if (!progress.isAborted())
+						if (!progress.isAborted()) {
+							String variantId = null;
 							try
 							{
-								VariantContext vc = variant.toVariantContext(variantDataChunkMap.get(variant), nAssemblyId, !MgdbDao.idLooksGenerated(variant.getId().toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variant.getId() : markerSynonyms.get(variant.getId()));
+								variantId = nAssemblyId == null ? ((VariantDataV2) variant).getId() : ((VariantData) variant).getId();
+				                if (markerSynonyms != null) {
+				                	String syn = markerSynonyms.get(variantId);
+				                    if (syn != null)
+				                        variantId = syn;
+				                }
+
+								VariantContext vc;
+								if (nAssemblyId == null)
+									vc = ((VariantDataV2)variant).toVariantContext((Collection<VariantRunDataV2>) variantDataChunkMap.get(variant), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
+								else
+									vc = ((VariantData)variant).toVariantContext((Collection<VariantRunData>) variantDataChunkMap.get(variant), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
 								finalVariantContextWriter.add(vc);
 							}
 							catch (Exception e)
 							{
 								if (progress.getError() == null)	// only log this once
-									LOG.debug("Unable to export " + variant.getId(), e);
-								progress.setError("Unable to export " + variant.getId() + ": " + e.getMessage());
+									LOG.debug("Unable to export " + variantId, e);
+								progress.setError("Unable to export " + variantId + ": " + e.getMessage());
 							}
+						}
 					}
 					return null;
 				}
