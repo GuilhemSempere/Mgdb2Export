@@ -48,7 +48,9 @@ import fr.cirad.mgdb.exporting.tools.AsyncExportTool.AbstractDataOutputHandler;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.Individual;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
@@ -187,16 +189,23 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 
             ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
             
-    		AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>>() {				
+    		AbstractDataOutputHandler<Integer, LinkedHashMap> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap>() {				
     			@Override
     			public Void call() {
     				StringBuffer sb = new StringBuffer();
-    				for (VariantData variant : variantDataChunkMap.keySet())
+    				for (Object variant : variantDataChunkMap.keySet()) {
+    					String variantId = null;
     					try
     					{
-    						String variantId = variant.getId();
+    						variantId = nAssemblyId == null ? ((VariantDataV2) variant).getId() : ((VariantData) variant).getId();
+    		                if (markerSynonyms != null) {
+    		                	String syn = markerSynonyms.get(variantId);
+    		                    if (syn != null)
+    		                        variantId = syn;
+    		                }
 
-    		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
+    		                ReferencePosition rp = nAssemblyId == null ? ((VariantDataV2) variant).getReferencePosition() : ((VariantData) variant).getReferencePosition(nAssemblyId);
+
     	                    if (rp == null)
     	                    	unassignedMarkers.add(variantId);
     	                    // LOG.debug(marker + "\t" + (chromAndPos.length == 0 ? "0" : chromAndPos[0]) + "\t" + 0 + "\t" + (chromAndPos.length == 0 ? 0l : Long.parseLong(chromAndPos[1])) + LINE_SEPARATOR);
@@ -209,31 +218,55 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     	                    snpFileWriter.write(variantId + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + 0 + "\t" + (rp == null ? 0 : rp.getStartSite()) + LINE_SEPARATOR);
 
     	                    Map<String, List<String>> individualGenotypes = new TreeMap<String, List<String>>(new AlphaNumericComparator<String>());
-    	                    Collection<VariantRunData> runs = variantDataChunkMap.get(variant);
-    	                    if (runs != null) {
-    	                        for (VariantRunData run : runs) {
-    	    						for (Integer sampleId : run.getGenotypes().keySet()) {
-    	                                String individualId = sampleIdToIndividualMap.get(sampleId);
-    	                                List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
-    	                                if (storedIndividualGenotypes == null) {
-    	                                    storedIndividualGenotypes = new ArrayList<String>();
-    	                                    individualGenotypes.put(individualId, storedIndividualGenotypes);
-    	                                }
-    	                                
-    	    							if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
-    	    								continue;	// skip genotype
-
-    	                                storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
-    	                            }
-    	                        }
-    	                    }
+    		                if (nAssemblyId == null) {
+    			                Collection<VariantRunDataV2> runs = (Collection<VariantRunDataV2>) variantDataChunkMap.get((VariantDataV2) variant);
+    			                if (runs != null) {
+    			                    for (VariantRunDataV2 run : runs) {
+    			                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
+    										SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+    										String individualId = sampleIdToIndividualMap.get(sampleId);
+    			                            
+    										if (!VariantData.gtPassesVcfAnnotationFiltersV2(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+    											continue;	// skip genotype
+    										
+    			                            String gtCode = sampleGenotype.getCode();
+    			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+    			                            if (storedIndividualGenotypes == null) {
+    			                                storedIndividualGenotypes = new ArrayList<String>();
+    			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+    			                            }
+    			                            storedIndividualGenotypes.add(gtCode);
+    			                        }
+    			                    }
+    			                }
+    		                }
+    		                else {
+    			                Collection<VariantRunData> runs = (Collection<VariantRunData>) variantDataChunkMap.get((VariantData) variant);
+    			                if (runs != null) {
+    			                    for (VariantRunData run : runs) {
+    									for (Integer sampleId : run.getGenotypes().keySet()) {
+    										String individualId = sampleIdToIndividualMap.get(sampleId);
+    			                            
+    										if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+    											continue;	// skip genotype
+    										
+    			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+    			                            if (storedIndividualGenotypes == null) {
+    			                                storedIndividualGenotypes = new ArrayList<String>();
+    			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+    			                            }
+    			                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
+    			                        }
+    			                    }
+    			                }
+    		                }
 
     	                    boolean fFirstLoopExecution = true;
     	                    if (individualGenotypes.isEmpty())
     	                    {
     	                    	for (int i=0; i<sortedIndividuals.size(); i++)
     	                    		sb.append(missingData);
-    	                    	warningFileWriter.write("- No genotypes found for variant " + (variantId == null ? variant.getId() : variantId) + "\n");
+    	                    	warningFileWriter.write("- No genotypes found for variant " + variantId+ "\n");
     	                    }
     	                    else
     		                    for (String individualId : sortedIndividuals /* we use this object because it has the proper ordering*/) {
@@ -256,7 +289,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		                            }
     		                        }
     		
-    		                        List<String> alleles = mostFrequentGenotype == null ? new ArrayList<String>() : variant.getAllelesFromGenotypeCode(mostFrequentGenotype);
+    		                        List<String> alleles = mostFrequentGenotype == null ? new ArrayList<String>() : (nAssemblyId == null ? ((VariantDataV2) variant).getAllelesFromGenotypeCode(mostFrequentGenotype) : ((VariantData) variant).getAllelesFromGenotypeCode(mostFrequentGenotype));
     		
     		                        int nOutputCode = 0;
     		                        if (mostFrequentGenotype == null)
@@ -266,17 +299,19 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		                                if ("0".equals(all))
     		                                    nOutputCode++;
     		
-    		                        if (fFirstLoopExecution && variant.getKnownAlleleList().size() > 2) {
-    		                            warningFileWriter.write("- Variant " + variant.getId() + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n");
+    		                        if (fFirstLoopExecution) {
+    		                        	List<String> knownAlleleList = nAssemblyId == null ? ((VariantDataV2) variant).getKnownAlleleList() : ((VariantData) variant).getKnownAlleleList();
+    		                        	if (knownAlleleList.size() > 2)
+    		                        		warningFileWriter.write("- Variant " + variantId + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n");
     		                        }
     		                        sb.append(nOutputCode);
     		
     		                        if (genotypeCounts.size() > 1 || alleles.size() > 2) {
     		                            if (genotypeCounts.size() > 1) {
-    		                                warningFileWriter.write("- Dissimilar genotypes found for variant " + (variantId == null ? variant.getId() : variantId) + ", individual " + individualId + ". Exporting most frequent: " + nOutputCode + "\n");
+    		                                warningFileWriter.write("- Dissimilar genotypes found for variant " + variantId + ", individual " + individualId + ". Exporting most frequent: " + nOutputCode + "\n");
     		                            }
     		                            if (alleles.size() > 2) {
-    		                                warningFileWriter.write("- More than 2 alleles found for variant " + (variantId == null ? variant.getId() : variantId) + ", individual " + individualId + ". Exporting only the first 2 alleles.\n");
+    		                                warningFileWriter.write("- More than 2 alleles found for variant " + variantId  + ", individual " + individualId + ". Exporting only the first 2 alleles.\n");
     		                            }
     		                        }
     		                        fFirstLoopExecution = false;
@@ -286,8 +321,8 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     					catch (Exception e)
     					{
     						if (progress.getError() == null)	// only log this once
-    							LOG.debug("Unable to export " + variant.getId(), e);
-    						progress.setError("Unable to export " + variant.getId() + ": " + e.getMessage());
+    							LOG.debug("Unable to export " + variantId, e);
+    						progress.setError("Unable to export " + variantId + ": " + e.getMessage());
     						
      	                    try
      	                    {
@@ -296,6 +331,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 							}
      	                    catch (IOException ignored) {}
     					}
+    				}
     				
                     try
                     {
