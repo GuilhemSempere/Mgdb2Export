@@ -49,7 +49,10 @@ import fr.cirad.mgdb.exporting.tools.AsyncExportTool;
 import fr.cirad.mgdb.exporting.tools.AsyncExportTool.AbstractDataOutputHandler;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
+import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
@@ -139,17 +142,23 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 
-		AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap<VariantData, Collection<VariantRunData>>>() {				
+		AbstractDataOutputHandler<Integer, LinkedHashMap> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap>() {				
 			@Override
 			public Void call() {
 				StringBuffer sb = new StringBuffer();
-				for (VariantData variant : variantDataChunkMap.keySet())
+				for (Object variant : variantDataChunkMap.keySet()) {
+					String variantId = null;
 					try
 					{
-						String variantId = variant.getId();
+						variantId = nAssemblyId == null ? ((VariantDataV2) variant).getId() : ((VariantData) variant).getId();
+		                if (markerSynonyms != null) {
+		                	String syn = markerSynonyms.get(variantId);
+		                    if (syn != null)
+		                        variantId = syn;
+		                }
 		                List<String> variantDataOrigin = new ArrayList<>();
 		                Map<String, List<String>> individualGenotypes = new TreeMap<>(new AlphaNumericComparator<String>());
-		                if (variant.getReferencePosition(nAssemblyId) == null)
+		                if ((nAssemblyId == null && ((VariantDataV2) variant).getReferencePosition() == null) || (nAssemblyId != null && ((VariantData) variant).getReferencePosition(nAssemblyId) == null))
 		                	unassignedMarkers.add(variantId);
 		                
 		                if (markerSynonyms != null) {
@@ -158,32 +167,59 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                        variantId = syn;
 		                }
 
-		                Collection<VariantRunData> runs = variantDataChunkMap.get(variant);
-		                if (runs != null) {
-		                    for (VariantRunData run : runs) {
-								for (Integer sampleId : run.getGenotypes().keySet()) {
-									String individualId = sampleIdToIndividualMap.get(sampleId);
-		                            
-									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
-										continue;	// skip genotype
-
-		                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
-		                            if (storedIndividualGenotypes == null) {
-		                                storedIndividualGenotypes = new ArrayList<>();
-		                                individualGenotypes.put(individualId, storedIndividualGenotypes);
-		                            }
-		                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
-		                        }
-		                    }
+		                if (nAssemblyId == null) {
+			                Collection<VariantRunDataV2> runs = (Collection<VariantRunDataV2>) variantDataChunkMap.get((VariantDataV2) variant);
+			                if (runs != null) {
+			                    for (VariantRunDataV2 run : runs) {
+			                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
+										SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+										String individualId = sampleIdToIndividualMap.get(sampleId);
+			                            
+										if (!VariantData.gtPassesVcfAnnotationFiltersV2(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+											continue;	// skip genotype
+										
+			                            String gtCode = sampleGenotype.getCode();
+			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+			                            if (storedIndividualGenotypes == null) {
+			                                storedIndividualGenotypes = new ArrayList<String>();
+			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+			                            }
+			                            storedIndividualGenotypes.add(gtCode);
+			                        }
+			                    }
+			                }
+		                }
+		                else {
+			                Collection<VariantRunData> runs = (Collection<VariantRunData>) variantDataChunkMap.get((VariantData) variant);
+			                if (runs != null) {
+			                    for (VariantRunData run : runs) {
+									for (Integer sampleId : run.getGenotypes().keySet()) {
+										String individualId = sampleIdToIndividualMap.get(sampleId);
+			                            
+										if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+											continue;	// skip genotype
+										
+			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+			                            if (storedIndividualGenotypes == null) {
+			                                storedIndividualGenotypes = new ArrayList<String>();
+			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+			                            }
+			                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId));
+			                        }
+			                    }
+			                }
 		                }
 
-		                String refAllele = variant.getKnownAlleleList().get(0);
-		                String chrom = variant.getReferencePosition(nAssemblyId) == null ? "0" : variant.getReferencePosition(nAssemblyId).getSequence();
-		                long start = variant.getReferencePosition(nAssemblyId) == null ? 0 : variant.getReferencePosition(nAssemblyId).getStartSite();
-		                long end = Type.SNP.equals(variant.getType()) ? start : start + refAllele.length() - 1;
-		                sb.append(chrom + "\t" + StringUtils.join(variantDataOrigin, ";") /*source*/ + "\t" + typeToOntology.get(variant.getType()) + "\t" + start + "\t" + end + "\t" + "." + "\t" + "+" + "\t" + "." + "\t");
-		                Comparable syn = markerSynonyms == null ? null : markerSynonyms.get(variant.getId());
-		                sb.append("ID=" + variant.getId() + ";" + (syn != null ? "Name=" + syn + ";" : "") + "alleles=" + StringUtils.join(variant.getKnownAlleleList(), "/") + ";" + "refallele=" + refAllele + ";");
+		                ReferencePosition rp = nAssemblyId == null ? ((VariantDataV2) variant).getReferencePosition() : ((VariantData) variant).getReferencePosition(nAssemblyId);
+		                List<String> knownAlleleList = nAssemblyId == null ? ((VariantDataV2) variant).getKnownAlleleList() : ((VariantData) variant).getKnownAlleleList();
+		                String refAllele = knownAlleleList.get(0);
+		                String chrom = rp == null ? "0" : rp.getSequence();
+		                long start = rp == null ? 0 : rp.getStartSite();
+		                String variantType = nAssemblyId == null ? ((VariantDataV2) variant).getType() : ((VariantData) variant).getType();
+		                long end = Type.SNP.equals(variantType) ? start : start + refAllele.length() - 1;
+		                sb.append(chrom + "\t" + StringUtils.join(variantDataOrigin, ";") /*source*/ + "\t" + typeToOntology.get(variantType) + "\t" + start + "\t" + end + "\t" + "." + "\t" + "+" + "\t" + "." + "\t");
+		                Comparable syn = markerSynonyms == null ? null : markerSynonyms.get(variantId);
+		                sb.append("ID=" + variantId + ";" + (syn != null ? "Name=" + syn + ";" : "") + "alleles=" + StringUtils.join(knownAlleleList, "/") + ";" + "refallele=" + refAllele + ";");
 
 		                for (String individualId : individualGenotypes.keySet() /* we use this object because it has the proper ordering*/) {
 		                    NumberFormat nf = NumberFormat.getInstance(Locale.US);
@@ -203,8 +239,9 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                            }
 
 		                            int count = 0;
-		                            for (String t : variant.getAllelesFromGenotypeCode(genotype)) {
-		                                for (String t1 : variant.getKnownAlleleList()) {
+		                            List<String> alleles = nAssemblyId == null ? ((VariantDataV2) variant).getAllelesFromGenotypeCode(genotype) : ((VariantData) variant).getAllelesFromGenotypeCode(genotype);
+		                            for (String t : alleles) {
+		                                for (String t1 : knownAlleleList) {
 		                                    if (t.equals(t1) && !(compt1.containsKey(t1))) {
 		                                        count++;
 		                                        compt1.put(t1, count);
@@ -233,7 +270,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                        }
 		                    }
 
-		                    List<String> alleles = mostFrequentGenotype == null ? new ArrayList<>() : variant.getAllelesFromGenotypeCode(mostFrequentGenotype);
+		                    List<String> alleles = mostFrequentGenotype == null ? new ArrayList<>() : (nAssemblyId == null ? ((VariantDataV2) variant).getAllelesFromGenotypeCode(mostFrequentGenotype) : ((VariantData) variant).getAllelesFromGenotypeCode(mostFrequentGenotype));
 
 		                    if (!alleles.isEmpty()) {
 		                        sb.append("acounts=" + individualId + ":");
@@ -244,8 +281,8 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                        sb.append(alleles.size() + ";");
 		                    }
 		                    if (genotypeCounts.size() > 1) {
-		                        Comparable sVariantId = markerSynonyms != null ? markerSynonyms.get(variant.getId()) : variant.getId();
-		                        warningFileWriter.write("- Dissimilar genotypes found for variant " + (sVariantId == null ? variant.getId() : sVariantId) + ", individual " + individualId + ". Exporting most frequent: " + StringUtils.join(alleles, ",") + "\n");
+		                        Comparable sVariantId = markerSynonyms != null ? markerSynonyms.get(variantId) : variantId;
+		                        warningFileWriter.write("- Dissimilar genotypes found for variant " + (sVariantId == null ? variantId : sVariantId) + ", individual " + individualId + ". Exporting most frequent: " + StringUtils.join(alleles, ",") + "\n");
 		                    }
 		                }
 		                sb.append(LINE_SEPARATOR);		            
@@ -253,10 +290,11 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 					catch (Exception e)
 					{
 						if (progress.getError() == null)	// only log this once
-							LOG.debug("Unable to export " + variant.getId(), e);
-						progress.setError("Unable to export " + variant.getId() + ": " + e.getMessage());
+							LOG.debug("Unable to export " + variantId, e);
+						progress.setError("Unable to export " + variantId + ": " + e.getMessage());
 					}
-				
+				}
+
                 try
                 {
     				zos.write(sb.toString().getBytes());
