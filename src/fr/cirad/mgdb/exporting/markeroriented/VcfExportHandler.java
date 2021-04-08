@@ -47,6 +47,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 
+import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.AsyncExportTool;
 import fr.cirad.mgdb.exporting.tools.AsyncExportTool.AbstractDataOutputHandler;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
@@ -201,7 +202,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 			String sequenceSeqCollName = MongoTemplateManager.getMongoCollectionName(Sequence.class);
 			if (mongoTemplate.collectionExists(sequenceSeqCollName))
-	    		try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc(nAssemblyId)).sort(sortDoc(nAssemblyId)).noCursorTimeout(true).collation(collationObj).batchSize(nQueryChunkSize ).iterator()) {
+				try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
 					while (markerCursor.hasNext())
 					{
 						int nLoadedMarkerCountInLoop = 0;
@@ -321,7 +322,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 				}
 			};			
 			
-			try (MongoCursor<Document> markerCursor = varColl.find(varQuery).projection(projectionDoc(nAssemblyId)).sort(sortDoc(nAssemblyId)).noCursorTimeout(true).collation(collationObj).batchSize(nQueryChunkSize).iterator()) {
+			try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
 				AsyncExportTool asyncExportTool = new AsyncExportTool(markerCursor, markerCount, nQueryChunkSize, mongoTemplate, samplesToExport, dataOutputHandler, progress);
 				asyncExportTool.launch();
 	
