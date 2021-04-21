@@ -170,7 +170,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 			projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);
 			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_KNOWN_ALLELE_LIST : AbstractVariantDataV2.FIELDNAME_KNOWN_ALLELE_LIST, 1);
 			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_TYPE : AbstractVariantDataV2.FIELDNAME_TYPE, 1);
-			projection.append(!fV2Model ? AbstractVariantData.SECTION_ADDITIONAL_INFO : VariantRunDataV2.SECTION_ADDITIONAL_INFO, 1);
 			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_SYNONYMS : VariantRunDataV2.FIELDNAME_SYNONYMS, 1);
 			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_ANALYSIS_METHODS : VariantRunDataV2.FIELDNAME_ANALYSIS_METHODS, 1);
 			for (GenotypingSample sp : samplesToExport) {

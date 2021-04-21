@@ -94,7 +94,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
 	 * @see fr.cirad.mgdb.exporting.individualoriented.AbstractIndividualOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.Collection, boolean, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, java.util.Map)
      */
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
         
@@ -152,7 +152,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
     	int nQueryChunkSize = (int) (nMaxChunkSizeInMb * 1024 * 1024 / avgObjSize.doubleValue());
 
         int nMarkerIndex = 0;
-        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 			while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            String markerId = (String) exportVariant.get("_id");
@@ -281,7 +281,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
 
         // now read variant names for those that induced warnings
         nMarkerIndex = 0;
-        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            if (problematicMarkerIndexToNameMap.containsKey(nMarkerIndex)) {

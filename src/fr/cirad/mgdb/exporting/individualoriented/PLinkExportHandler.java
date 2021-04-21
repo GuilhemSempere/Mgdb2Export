@@ -105,7 +105,7 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	 * @see fr.cirad.mgdb.exporting.individualoriented.AbstractIndividualOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.Collection, boolean, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, java.util.Map)
      */
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
 
@@ -226,7 +226,7 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
         Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
 		int nQueryChunkSize = (int) (nMaxChunkSizeInMb * 1024 * 1024 / avgObjSize.doubleValue());
-		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, (nAssemblyId != null ? VariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId : VariantDataV2.FIELDNAME_REFERENCE_POSITION), "; ", null);

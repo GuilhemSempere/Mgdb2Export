@@ -86,7 +86,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 	 * @see fr.cirad.mgdb.exporting.individualoriented.AbstractIndividualOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.Collection, boolean, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, java.util.Map)
      */
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
 
@@ -115,7 +115,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
         zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
         zos.write(("# fjFile = GENOTYPE" + LINE_SEPARATOR).getBytes());
         
-        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            Comparable markerId = (Comparable) exportVariant.get("_id");
@@ -218,7 +218,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
         int nMarkerIndex = 0;
         ArrayList<String> unassignedMarkers = new ArrayList<>();
-        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, (nAssemblyId != null ? VariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId : VariantDataV2.FIELDNAME_REFERENCE_POSITION), "; ", null);
