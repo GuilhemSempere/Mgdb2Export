@@ -33,6 +33,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -48,17 +50,16 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
-import fr.cirad.mgdb.exporting.tools.AsyncExportTool;
-import fr.cirad.mgdb.exporting.tools.AsyncExportTool.AbstractDataOutputHandler;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.Sequence;
 import fr.cirad.mgdb.model.mongo.maintypes.SequenceStats;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
+import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
+import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantDataV2;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
@@ -149,8 +150,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-        
+    public void exportData(OutputStream outputStream, String sModule, int nProjId, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
 
@@ -192,7 +192,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		String exportName = sModule + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
 
 		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
-		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()) / AsyncExportTool.WRITING_QUEUE_CAPACITY);
+		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()));
 
 		VariantContextWriter writer = null;
 		try
@@ -202,7 +202,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 			String sequenceSeqCollName = MongoTemplateManager.getMongoCollectionName(Sequence.class);
 			if (mongoTemplate.collectionExists(sequenceSeqCollName))
-				try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
+				try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
 					while (markerCursor.hasNext())
 					{
 						int nLoadedMarkerCountInLoop = 0;
@@ -256,7 +256,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 				headerLines.add(new VCFFormatHeaderLine("GT", 1, VCFHeaderLineType.String, "Genotype"));	// minimum required
 			
 			// Add sequence header lines (not stored in our vcf header collection)
-			Document projection = new Document(SequenceStats.FIELDNAME_SEQUENCE_LENGTH, true);
 			int nSequenceIndex = 0;
 			String sequenceInfoCollName = MongoTemplateManager.getMongoCollectionName(SequenceStats.class);
 			boolean fCollectionExists = mongoTemplate.collectionExists(sequenceInfoCollName);
@@ -264,7 +263,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			{
 				Map<String, String> sequenceLineData = new LinkedHashMap<String, String>();
 				if (fCollectionExists) {
-					Document record = mongoTemplate.getCollection(sequenceInfoCollName).find(new Query(Criteria.where("_id").is(sequenceName)).getQueryObject()).projection(projection).first();
+					Document record = mongoTemplate.getCollection(sequenceInfoCollName).find(new Query(Criteria.where("_id").is(sequenceName)).getQueryObject()).projection(new Document(SequenceStats.FIELDNAME_SEQUENCE_LENGTH, true)).first();
 					if (record == null)
 					{
 						LOG.warn("Sequence '" + sequenceName + "' not found in collection " + sequenceInfoCollName);
@@ -287,48 +286,85 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			HashMap<Integer, Object /*phID*/> phasingIDsBySample = new HashMap<>();
 			
 			final VariantContextWriter finalVariantContextWriter = writer;
-			AbstractDataOutputHandler<Integer, LinkedHashMap> dataOutputHandler = new AbstractDataOutputHandler<Integer, LinkedHashMap>() {				
-				@Override
-				public Void call() {
-					for (Object variant : variantDataChunkMap.keySet())
-					{
-						if (!progress.isAborted()) {
-							String variantId = null;
-							try
-							{
-								variantId = nAssemblyId == null ? ((VariantDataV2) variant).getId() : ((VariantData) variant).getId();
-				                if (markerSynonyms != null) {
-				                	String syn = markerSynonyms.get(variantId);
-				                    if (syn != null)
-				                        variantId = syn;
-				                }
 
-								VariantContext vc;
-								if (nAssemblyId == null)
-									vc = ((VariantDataV2)variant).toVariantContext((Collection<VariantRunDataV2>) variantDataChunkMap.get(variant), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
-								else
-									vc = ((VariantData)variant).toVariantContext((Collection<VariantRunData>) variantDataChunkMap.get(variant), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
-								finalVariantContextWriter.add(vc);
-							}
-							catch (Exception e)
-							{
-								if (progress.getError() == null)	// only log this once
-									LOG.debug("Unable to export " + variantId, e);
-								progress.setError("Unable to export " + variantId + ": " + e.getMessage());
-							}
+			boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
+			Class runVersionType = fV2Model ? VariantRunDataV2.class : VariantRunData.class;
+
+			MongoCollection genoColl = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+			List<Document> pipeline = new ArrayList<Document>();
+
+			if (!varQuery.isEmpty()) // already checked above
+				pipeline.add(new Document("$match", varQuery));
+
+			TreeSet<String> annotationFields = MgdbDao.getAnnotationFields(mongoTemplate, nProjId, false);
+			
+			Document projection = new Document();
+			projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);
+			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_KNOWN_ALLELE_LIST : AbstractVariantDataV2.FIELDNAME_KNOWN_ALLELE_LIST, 1);
+			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_TYPE : AbstractVariantDataV2.FIELDNAME_TYPE, 1);
+			projection.append(!fV2Model ? AbstractVariantData.SECTION_ADDITIONAL_INFO : VariantRunDataV2.SECTION_ADDITIONAL_INFO, 1);
+			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_SYNONYMS : VariantRunDataV2.FIELDNAME_SYNONYMS, 1);
+			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_ANALYSIS_METHODS : VariantRunDataV2.FIELDNAME_ANALYSIS_METHODS, 1);
+			for (GenotypingSample sp : samplesToExport) {
+				if (fV2Model)
+					projection.append(VariantRunDataV2.FIELDNAME_SAMPLEGENOTYPES + "." + sp.getId(), 1);
+				else {
+					projection.append(VariantRunData.FIELDNAME_GENOTYPES + "." + sp.getId(), 1);
+					for (String annotationField : annotationFields)
+						projection.append(VariantRunData.FIELDNAME_METADATA + "." + annotationField + "." + sp.getId(), 1);
+				}
+			}
+//			if (!fV2Model)
+//				projection.append(VariantRunData.FIELDNAME_METADATA, 1);
+			
+			MongoCursor markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(genoColl, runVersionType, varQuery, projection, nAssemblyId, nQueryChunkSize);			
+			LinkedHashMap<String, List<Object>> markerRunsToWrite = new LinkedHashMap<>();
+			AtomicLong timeWriting = new AtomicLong(0);
+
+			Thread writingThread = new Thread() {
+				public void run() {
+//					long b4 = System.currentTimeMillis();
+					for (String idOfVarToWrite : markerRunsToWrite.keySet()) {
+						List<Object> runsToWrite = markerRunsToWrite.get(idOfVarToWrite);
+						if (runsToWrite.isEmpty())
+							continue;
+						
+						String variantId = null;
+						try
+						{
+			                if (markerSynonyms != null) {
+			                	String syn = markerSynonyms.get(idOfVarToWrite);
+			                    if (syn != null)
+			                    	idOfVarToWrite = syn;
+			                }
+		
+			                Object variant = runsToWrite.get(0);
+							variantId = nAssemblyId == null ? ((VariantRunDataV2) variant).getId().getVariantId() : ((VariantRunData) variant).getId().getVariantId();
+			                if (markerSynonyms != null) {
+			                	String syn = markerSynonyms.get(variantId);
+			                    if (syn != null)
+			                        variantId = syn;
+			                }
+
+							VariantContext vc;
+							if (nAssemblyId == null)
+								vc = ((VariantRunDataV2) variant).toVariantContext((Collection) markerRunsToWrite.get(idOfVarToWrite), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
+							else
+								vc = ((VariantRunData) variant).toVariantContext((Collection) markerRunsToWrite.get(idOfVarToWrite), nAssemblyId, !MgdbDao.idLooksGenerated(variantId.toString()), samplesToExport, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? variantId : markerSynonyms.get(variantId));
+							finalVariantContextWriter.add(vc);
+						}
+						catch (Exception e)
+						{
+							if (progress.getError() == null)	// only log this once
+								LOG.debug("Unable to export " + idOfVarToWrite, e);
+							progress.setError("Unable to export " + idOfVarToWrite + ": " + e.getMessage());
 						}
 					}
-					return null;
+					markerRunsToWrite.clear();
 				}
-			};			
+			};
 			
-			try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nAssemblyId, nQueryChunkSize)) {
-				AsyncExportTool asyncExportTool = new AsyncExportTool(markerCursor, markerCount, nQueryChunkSize, mongoTemplate, samplesToExport, dataOutputHandler, progress);
-				asyncExportTool.launch();
-	
-				while (progress.getCurrentStepProgress() < 100 && !progress.isAborted())
-					Thread.sleep(500);
-			}
+			IExportHandler.readAndWrite(markerCursor, progress, warningFileWriter, fV2Model, nQueryChunkSize, markerRunsToWrite, writingThread, variantCount);
 			zos.closeEntry();
 		}
 		catch (Exception e)
