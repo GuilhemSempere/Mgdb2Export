@@ -63,6 +63,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantDataV2;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.samtools.SAMSequenceDictionary;
@@ -150,7 +151,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, int nProjId, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
 
@@ -296,7 +297,9 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			if (!varQuery.isEmpty()) // already checked above
 				pipeline.add(new Document("$match", varQuery));
 
-			TreeSet<String> annotationFields = MgdbDao.getAnnotationFields(mongoTemplate, nProjId, false);
+			TreeSet<String> annotationFields = new TreeSet<>();
+			for (GenotypingSample sample : samplesToExport.stream().filter(Helper.distinctByKey(GenotypingSample::getProjectId)).collect(Collectors.toList()))
+				annotationFields.addAll(MgdbDao.getAnnotationFields(mongoTemplate, sample.getProjectId(), false));
 			
 			Document projection = new Document();
 			projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);

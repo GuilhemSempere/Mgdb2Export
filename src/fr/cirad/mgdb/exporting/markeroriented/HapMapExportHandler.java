@@ -111,7 +111,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, int nProjId, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
         
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
@@ -150,8 +150,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		final Map<Integer, String> sampleIdToIndividualMap = new HashMap<>();
 		for (GenotypingSample gs : samplesToExport)
 			sampleIdToIndividualMap.put(gs.getId(), gs.getIndividual());
-		
-		TreeSet<String> annotationFields = MgdbDao.getAnnotationFields(mongoTemplate, nProjId, false);
 		
 		if (varColl.getNamespace().getCollectionName().startsWith(MongoTemplateManager.TEMP_COLL_PREFIX)) {
 			progress.setError("Fast export on tmp coll NYI");
