@@ -400,7 +400,8 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
                                 outputValue = sb.toString();
                             }
                         } else {
-                            Object val = g.hasExtendedAttribute(field) ? g.getExtendedAttribute(field) : ".";
+                        	Object extendedAttr = g.getExtendedAttribute(field);
+                            Object val = extendedAttr != null ? extendedAttr : ".";
                             VCFFormatHeaderLine metaData = mHeader.getFormatHeaderLine(field);
                             if (metaData != null) {
                                 int numInFormatField = Math.min(10000, metaData.getCount(vc));	// limit applied to avoid OutOfMemoryError on some MIXED type variants where the value ended up being huge (this change does not seem to have any effect on the output)
