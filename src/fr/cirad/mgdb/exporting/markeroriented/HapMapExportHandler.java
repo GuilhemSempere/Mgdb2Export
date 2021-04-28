@@ -30,7 +30,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -111,7 +110,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
         
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
@@ -138,7 +137,10 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
             }
         }
 
-		long markerCount = varColl.countDocuments(varQuery);
+		boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
+		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+
+		long markerCount = collWithPojoCodec.countDocuments(varQuery);
         String exportName = sModule + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
         zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
         String header = "rs#" + "\t" + "alleles" + "\t" + "chrom" + "\t" + "pos" + "\t" + "strand" + "\t" + "assembly#" + "\t" + "center" + "\t" + "protLSID" + "\t" + "assayLSID" + "\t" + "panelLSID" + "\t" + "QCcode";
@@ -151,164 +153,152 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		for (GenotypingSample gs : samplesToExport)
 			sampleIdToIndividualMap.put(gs.getId(), gs.getIndividual());
 		
-		if (varColl.getNamespace().getCollectionName().startsWith(MongoTemplateManager.TEMP_COLL_PREFIX)) {
-			progress.setError("Fast export on tmp coll NYI");
-			return;
-		} else { // no tmp coll: direct query
-			boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
-			Class runVersionType = fV2Model ? VariantRunDataV2.class : VariantRunData.class;
+		Class runVersionType = fV2Model ? VariantRunDataV2.class : VariantRunData.class;
 
-			MongoCollection genoColl = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
-			List<Document> pipeline = new ArrayList<Document>();
-
-			if (!varQuery.isEmpty()) // already checked above
-				pipeline.add(new Document("$match", varQuery));
-
-			Document projection = new Document();
-			projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);
-			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_KNOWN_ALLELE_LIST : AbstractVariantDataV2.FIELDNAME_KNOWN_ALLELE_LIST, 1);
-			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_TYPE : AbstractVariantDataV2.FIELDNAME_TYPE, 1);
-			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_SYNONYMS : VariantRunDataV2.FIELDNAME_SYNONYMS, 1);
-			projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_ANALYSIS_METHODS : VariantRunDataV2.FIELDNAME_ANALYSIS_METHODS, 1);
-			for (GenotypingSample sp : samplesToExport) {
-				if (fV2Model)
-					projection.append(VariantRunDataV2.FIELDNAME_SAMPLEGENOTYPES + "." + sp.getId() + "." + SampleGenotype.FIELDNAME_GENOTYPECODE, 1);
-				else
-					projection.append(VariantRunData.FIELDNAME_GENOTYPES + "." + sp.getId(), 1);
-			}
-			
-			Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
-			int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()));
-			
-//			long b4 = System.currentTimeMillis();
-			MongoCursor markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(genoColl, runVersionType, varQuery, projection, nAssemblyId, nQueryChunkSize);
-//			LOG.debug("cursor obtained in " + (System.currentTimeMillis() - b4) + "ms");
-			LinkedHashMap<String, List<Object>> markerRunsToWrite = new LinkedHashMap<>();
-
-			Thread writingThread = new Thread() {
-				public void run() {
-//					long b4 = System.currentTimeMillis();
-//					String id = markerRunsToWrite.keySet().iterator().next();
-//					System.out.println("writing " + id);
-					
-                    HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();	// will help us to keep track of missing genotypes
-					for (String idOfVarToWrite : markerRunsToWrite.keySet()) {
-						List<Object> runsToWrite = markerRunsToWrite.get(idOfVarToWrite);
-						if (runsToWrite.isEmpty())
-							continue;
-
-						StringBuffer sb = new StringBuffer();
-						try
-						{
-			                if (markerSynonyms != null) {
-			                	String syn = markerSynonyms.get(idOfVarToWrite);
-			                    if (syn != null)
-			                    	idOfVarToWrite = syn;
-			                }
-		
-			                Object variant = runsToWrite.get(0);
-			                boolean fIsSNP = (nAssemblyId == null ? ((VariantRunDataV2) variant).getType() : ((VariantRunData) variant).getType()).equals(Type.SNP.toString());
-		
-			                ReferencePosition rp = nAssemblyId == null ? ((VariantRunDataV2) variant).getReferencePosition() : ((VariantRunData) variant).getReferencePosition(nAssemblyId);
-			                sb.append(/*(variantId == null ? variant.getId() : */idOfVarToWrite/*)*/ + "\t" + StringUtils.join((nAssemblyId == null ? ((VariantRunDataV2) variant).getKnownAlleleList() : ((VariantRunData) variant).getKnownAlleleList()), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\tNA\tNA\tNA\tNA\tNA\tNA");
-		
-			                Map<String, List<String>> individualGenotypes = new TreeMap<String, List<String>>(new AlphaNumericComparator<String>());
-			                if (fV2Model) {
-			                	for (Object vrd : runsToWrite) {
-			                    	VariantRunDataV2 run = (VariantRunDataV2) vrd;
-			                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-										SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
-										String individualId = sampleIdToIndividualMap.get(sampleId);
-			                            
-										if (!VariantData.gtPassesVcfAnnotationFiltersV2(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
-											continue;	// skip genotype
-										
-			                            String gtCode = sampleGenotype.getCode().intern();
-			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
-			                            if (storedIndividualGenotypes == null) {
-			                                storedIndividualGenotypes = new ArrayList<String>();
-			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
-			                            }
-			                            storedIndividualGenotypes.add(gtCode);
-			                        }
-			                    }
-			                }
-			                else {
-			                    for (Object vrd : runsToWrite) {
-			                    	VariantRunData run = (VariantRunData) vrd;
-									for (Integer sampleId : run.getGenotypes().keySet()) {
-										String individualId = sampleIdToIndividualMap.get(sampleId);
-			                            
-										if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
-											continue;	// skip genotype
-										
-			                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
-			                            if (storedIndividualGenotypes == null) {
-			                                storedIndividualGenotypes = new ArrayList<String>();
-			                                individualGenotypes.put(individualId, storedIndividualGenotypes);
-			                            }
-			                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId).intern());
-			                        }
-			                    }
-				            }
-		
-			                int writtenGenotypeCount = 0;
-			                for (String individual : individualGenotypes.keySet() /* we use this list because it has the proper ordering */) {
-			                    int individualIndex = sortedIndividuals.indexOf(individual);
-			                    while (writtenGenotypeCount < individualIndex) {
-			                        sb.append(missingGenotype);
-			                        writtenGenotypeCount++;
-			                    }
-		
-			                    List<String> genotypes = individualGenotypes.get(individual);
-			                    genotypeCounts.clear();
-			                    int highestGenotypeCount = 0;
-			                    String mostFrequentGenotype = null;
-			                    if (genotypes != null) {
-			                        for (String genotype : genotypes) {
-			                            if (genotype == null)
-			                                continue;	/* skip missing genotypes */
-		
-			                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-			                            if (gtCount > highestGenotypeCount) {
-			                                highestGenotypeCount = gtCount;
-			                                mostFrequentGenotype = genotype;
-			                            }
-			                            genotypeCounts.put(genotype, gtCount);
-			                        }
-			                    }
-		
-			                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : ("\t" + StringUtils.join(nAssemblyId == null ? ((VariantRunDataV2) variant).getAllelesFromGenotypeCode(mostFrequentGenotype) : ((VariantRunData) variant).getAllelesFromGenotypeCode(mostFrequentGenotype), fIsSNP ? "" : "/"));
-			                    sb.append(exportedGT);
-			                    writtenGenotypeCount++;
-		
-			                    if (genotypeCounts.size() > 1)
-			                        warningFileWriter.write("- Dissimilar genotypes found for variant " + /*(variantId == null ? variant.getId() : */idOfVarToWrite/*)*/ + ", individual " + individual + ". Exporting most frequent: " + new String(exportedGT) + "\n");
-			                }
-		
-			                while (writtenGenotypeCount < sortedIndividuals.size()) {
-			                    sb.append(missingGenotype);
-			                    writtenGenotypeCount++;
-			                }
-			                sb.append(LINE_SEPARATOR);
-		
-				            zos.write(sb.toString().getBytes());
-		                }
-						catch (Exception e)
-						{
-							if (progress.getError() == null)	// only log this once
-								LOG.debug("Unable to export " + idOfVarToWrite, e);
-							progress.setError("Unable to export " + idOfVarToWrite + ": " + e.getMessage());
-						}
-					}
-					markerRunsToWrite.clear();
-//					long duration = System.currentTimeMillis() - b4;
-//					System.out.println("wrote " + id + " in " + duration + "ms");
-				}
-			};
-
-			IExportHandler.readAndWrite(markerCursor, progress, warningFileWriter, fV2Model, nQueryChunkSize, markerRunsToWrite, writingThread, variantCount);
+		Document projection = new Document();
+		projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);
+		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_KNOWN_ALLELE_LIST : AbstractVariantDataV2.FIELDNAME_KNOWN_ALLELE_LIST, 1);
+		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_TYPE : AbstractVariantDataV2.FIELDNAME_TYPE, 1);
+		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_SYNONYMS : VariantRunDataV2.FIELDNAME_SYNONYMS, 1);
+		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_ANALYSIS_METHODS : VariantRunDataV2.FIELDNAME_ANALYSIS_METHODS, 1);
+		for (GenotypingSample sp : samplesToExport) {
+			if (fV2Model)
+				projection.append(VariantRunDataV2.FIELDNAME_SAMPLEGENOTYPES + "." + sp.getId() + "." + SampleGenotype.FIELDNAME_GENOTYPECODE, 1);
+			else
+				projection.append(VariantRunData.FIELDNAME_GENOTYPES + "." + sp.getId(), 1);
 		}
+		
+		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
+		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()));
+		
+//		long b4 = System.currentTimeMillis();
+		MongoCursor markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, collWithPojoCodec, runVersionType, varQuery, samplesToExport, false, nAssemblyId, nQueryChunkSize);
+//		LOG.debug("cursor obtained in " + (System.currentTimeMillis() - b4) + "ms");
+		LinkedHashMap<String, List<Object>> markerRunsToWrite = new LinkedHashMap<>();
+
+		Thread writingThread = new Thread() {
+			public void run() {
+//				long b4 = System.currentTimeMillis();
+//				String id = markerRunsToWrite.keySet().iterator().next();
+//				System.out.println("writing " + id);
+				
+                HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();	// will help us to keep track of missing genotypes
+				for (String idOfVarToWrite : markerRunsToWrite.keySet()) {
+					List<Object> runsToWrite = markerRunsToWrite.get(idOfVarToWrite);
+					if (runsToWrite.isEmpty())
+						continue;
+
+					StringBuffer sb = new StringBuffer();
+					try
+					{
+		                if (markerSynonyms != null) {
+		                	String syn = markerSynonyms.get(idOfVarToWrite);
+		                    if (syn != null)
+		                    	idOfVarToWrite = syn;
+		                }
+	
+		                Object variant = runsToWrite.get(0);
+		                boolean fIsSNP = (nAssemblyId == null ? ((VariantRunDataV2) variant).getType() : ((VariantRunData) variant).getType()).equals(Type.SNP.toString());
+	
+		                ReferencePosition rp = nAssemblyId == null ? ((VariantRunDataV2) variant).getReferencePosition() : ((VariantRunData) variant).getReferencePosition(nAssemblyId);
+		                sb.append(/*(variantId == null ? variant.getId() : */idOfVarToWrite/*)*/ + "\t" + StringUtils.join((nAssemblyId == null ? ((VariantRunDataV2) variant).getKnownAlleleList() : ((VariantRunData) variant).getKnownAlleleList()), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\tNA\tNA\tNA\tNA\tNA\tNA");
+	
+		                Map<String, List<String>> individualGenotypes = new TreeMap<String, List<String>>(new AlphaNumericComparator<String>());
+		                if (fV2Model) {
+		                	for (Object vrd : runsToWrite) {
+		                    	VariantRunDataV2 run = (VariantRunDataV2) vrd;
+		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
+									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+									String individualId = sampleIdToIndividualMap.get(sampleId);
+		                            
+									if (!VariantData.gtPassesVcfAnnotationFiltersV2(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+										continue;	// skip genotype
+									
+		                            String gtCode = sampleGenotype.getCode().intern();
+		                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+		                            if (storedIndividualGenotypes == null) {
+		                                storedIndividualGenotypes = new ArrayList<String>();
+		                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+		                            }
+		                            storedIndividualGenotypes.add(gtCode);
+		                        }
+		                    }
+		                }
+		                else {
+		                    for (Object vrd : runsToWrite) {
+		                    	VariantRunData run = (VariantRunData) vrd;
+								for (Integer sampleId : run.getGenotypes().keySet()) {
+									String individualId = sampleIdToIndividualMap.get(sampleId);
+		                            
+									if (!VariantData.gtPassesVcfAnnotationFilters(individualId, sampleId, run.getMetadata(), individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+										continue;	// skip genotype
+									
+		                            List<String> storedIndividualGenotypes = individualGenotypes.get(individualId);
+		                            if (storedIndividualGenotypes == null) {
+		                                storedIndividualGenotypes = new ArrayList<String>();
+		                                individualGenotypes.put(individualId, storedIndividualGenotypes);
+		                            }
+		                            storedIndividualGenotypes.add(run.getGenotypes().get(sampleId).intern());
+		                        }
+		                    }
+			            }
+	
+		                int writtenGenotypeCount = 0;
+		                for (String individual : individualGenotypes.keySet() /* we use this list because it has the proper ordering */) {
+		                    int individualIndex = sortedIndividuals.indexOf(individual);
+		                    while (writtenGenotypeCount < individualIndex) {
+		                        sb.append(missingGenotype);
+		                        writtenGenotypeCount++;
+		                    }
+	
+		                    List<String> genotypes = individualGenotypes.get(individual);
+		                    genotypeCounts.clear();
+		                    int highestGenotypeCount = 0;
+		                    String mostFrequentGenotype = null;
+		                    if (genotypes != null) {
+		                        for (String genotype : genotypes) {
+		                            if (genotype == null)
+		                                continue;	/* skip missing genotypes */
+	
+		                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
+		                            if (gtCount > highestGenotypeCount) {
+		                                highestGenotypeCount = gtCount;
+		                                mostFrequentGenotype = genotype;
+		                            }
+		                            genotypeCounts.put(genotype, gtCount);
+		                        }
+		                    }
+	
+		                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : ("\t" + StringUtils.join(nAssemblyId == null ? ((VariantRunDataV2) variant).getAllelesFromGenotypeCode(mostFrequentGenotype) : ((VariantRunData) variant).getAllelesFromGenotypeCode(mostFrequentGenotype), fIsSNP ? "" : "/"));
+		                    sb.append(exportedGT);
+		                    writtenGenotypeCount++;
+	
+		                    if (genotypeCounts.size() > 1)
+		                        warningFileWriter.write("- Dissimilar genotypes found for variant " + /*(variantId == null ? variant.getId() : */idOfVarToWrite/*)*/ + ", individual " + individual + ". Exporting most frequent: " + new String(exportedGT) + "\n");
+		                }
+	
+		                while (writtenGenotypeCount < sortedIndividuals.size()) {
+		                    sb.append(missingGenotype);
+		                    writtenGenotypeCount++;
+		                }
+		                sb.append(LINE_SEPARATOR);
+	
+			            zos.write(sb.toString().getBytes());
+	                }
+					catch (Exception e)
+					{
+						if (progress.getError() == null)	// only log this once
+							LOG.debug("Unable to export " + idOfVarToWrite, e);
+						progress.setError("Unable to export " + idOfVarToWrite + ": " + e.getMessage());
+					}
+				}
+				markerRunsToWrite.clear();
+//				long duration = System.currentTimeMillis() - b4;
+//				System.out.println("wrote " + id + " in " + duration + "ms");
+			}
+		};
+
+		IExportHandler.readAndWrite(markerCursor, progress, warningFileWriter, fV2Model, nQueryChunkSize, markerRunsToWrite, writingThread, variantCount);
 
         zos.closeEntry();
 
