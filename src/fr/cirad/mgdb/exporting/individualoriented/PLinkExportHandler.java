@@ -16,18 +16,6 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.individualoriented;
 
-import fr.cirad.mgdb.exporting.IExportHandler;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData.VariantRunDataId;
-import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
-import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.tools.Helper;
-import fr.cirad.tools.ProgressIndicator;
-import fr.cirad.tools.mongo.MongoTemplateManager;
-import htsjdk.variant.variantcontext.VariantContext.Type;
-
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -51,6 +39,19 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
+
+import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData.VariantRunDataId;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
+import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
+import fr.cirad.mgdb.model.mongodao.MgdbDao;
+import fr.cirad.tools.Helper;
+import fr.cirad.tools.ProgressIndicator;
+import fr.cirad.tools.mongo.MongoTemplateManager;
+import htsjdk.variant.variantcontext.VariantContext.Type;
 
 /**
  * The Class PLinkExportHandler.
@@ -104,8 +105,8 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
     /* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.individualoriented.AbstractIndividualOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.Collection, boolean, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, java.util.Map)
      */
-    @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, MongoCollection<Document> varColl, Document varQuery, long variantCount, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
+	@Override
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId,Collection<File> individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long variantCount, Map<String, String> markerSynonyms, Map<String, InputStream> readyToExportFiles) throws Exception {
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
 
@@ -126,6 +127,11 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         }
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+		boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
+
+		MongoCollection runCollWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+		MongoCollection varColl = tmpVarCollName != null ? runCollWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantDataV2.class : VariantData.class));
+
 		long markerCount = varColl.countDocuments(varQuery);
         String exportName = sModule + "__" + markerCount + "variants__" + individualExportFiles.size() + "individuals";
         zos.putNextEntry(new ZipEntry(exportName + ".ped"));
@@ -224,14 +230,15 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 
         int nMarkerIndex = 0;
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
-        Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
-		int nQueryChunkSize = (int) (nMaxChunkSizeInMb * 1024 * 1024 / avgObjSize.doubleValue());
-		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, Document.class, varQuery, null, nAssemblyId, nQueryChunkSize)) {
+//        Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
+//		int nQueryChunkSize = (int) (nMaxChunkSizeInMb * 1024 * 1024 / avgObjSize.doubleValue());
+		try (MongoCursor<Document> markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantDataV2.class : VariantData.class)), Document.class, varQuery, null, fV2Model, nAssemblyId, 10000)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, (nAssemblyId != null ? VariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId : VariantDataV2.FIELDNAME_REFERENCE_POSITION), "; ", null);
 	            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
-	            String markerId = (String) exportVariant.get("_id");
+	            Object id = exportVariant.get("_id");
+	            String markerId = (String) (Map.class.isAssignableFrom(id.getClass()) ? ((Map) id).get(VariantRunDataId.FIELDNAME_VARIANT_ID) : id);
 	            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
 	            if (chrom == null)
 	            	unassignedMarkers.add(markerId);

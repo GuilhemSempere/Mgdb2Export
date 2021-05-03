@@ -187,9 +187,10 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			}
 
 		boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
-		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+		MongoCollection runCollWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+		MongoCollection varColl = tmpVarCollName != null ? runCollWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantDataV2.class : VariantData.class));
 
-		long markerCount = collWithPojoCodec.countDocuments(varQuery);
+		long markerCount = varColl.countDocuments(varQuery);
 		String exportName = sModule + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
 
 		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
@@ -200,7 +201,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		{
 			zos.putNextEntry(new ZipEntry(exportName + ".vcf"));
 			List<String> distinctSequenceNames = new ArrayList<String>();
-			MongoCollection varColl = mongoTemplate.getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantDataV2.class : VariantData.class));
 
 			String sequenceSeqCollName = MongoTemplateManager.getMongoCollectionName(Sequence.class);
 			if (mongoTemplate.collectionExists(sequenceSeqCollName))
@@ -295,7 +295,9 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			if (!varQuery.isEmpty()) // already checked above
 				pipeline.add(new Document("$match", varQuery));
 
-			MongoCursor markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, collWithPojoCodec, runVersionType, varQuery, samplesToExport, true, nAssemblyId, nQueryChunkSize);			
+//			long b4 = System.currentTimeMillis();
+			MongoCursor markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, runCollWithPojoCodec, runVersionType, varQuery, samplesToExport, true, nAssemblyId, nQueryChunkSize);
+//			System.err.println("cursor obtained in " + (System.currentTimeMillis() - b4) + " ms");
 			LinkedHashMap<String, List<Object>> markerRunsToWrite = new LinkedHashMap<>();
 			AtomicLong timeWriting = new AtomicLong(0);
 

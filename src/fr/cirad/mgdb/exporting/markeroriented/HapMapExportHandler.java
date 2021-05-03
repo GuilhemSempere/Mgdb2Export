@@ -45,10 +45,9 @@ import com.mongodb.client.MongoCursor;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantDataV2;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunDataV2;
-import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
-import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantDataV2;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
@@ -110,8 +109,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-        
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, Collection<GenotypingSample> samples1, Collection<GenotypingSample> samples2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long variantCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Map<String, InputStream> readyToExportFiles) throws Exception {        
 		List<String> individuals1 = MgdbDao.getIndividualsFromSamples(sModule, samples1).stream().map(ind -> ind.getId()).collect(Collectors.toList());	
 		List<String> individuals2 = MgdbDao.getIndividualsFromSamples(sModule, samples2).stream().map(ind -> ind.getId()).collect(Collectors.toList());
 
@@ -138,9 +136,10 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         }
 
 		boolean fV2Model = nAssemblyId == null || nAssemblyId < 0;
-		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+		MongoCollection runCollWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(fV2Model ? VariantRunDataV2.class : VariantRunData.class));
+		MongoCollection varColl = tmpVarCollName != null ? runCollWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(fV2Model ? VariantDataV2.class : VariantData.class));
 
-		long markerCount = collWithPojoCodec.countDocuments(varQuery);
+		long markerCount = varColl.countDocuments(varQuery);
         String exportName = sModule + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
         zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
         String header = "rs#" + "\t" + "alleles" + "\t" + "chrom" + "\t" + "pos" + "\t" + "strand" + "\t" + "assembly#" + "\t" + "center" + "\t" + "protLSID" + "\t" + "assayLSID" + "\t" + "panelLSID" + "\t" + "QCcode";
@@ -153,26 +152,11 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		for (GenotypingSample gs : samplesToExport)
 			sampleIdToIndividualMap.put(gs.getId(), gs.getIndividual());
 		
-		Class runVersionType = fV2Model ? VariantRunDataV2.class : VariantRunData.class;
-
-		Document projection = new Document();
-		projection.append(!fV2Model ? (AbstractVariantData.FIELDNAME_REFERENCE_POSITION + "." + nAssemblyId) : AbstractVariantDataV2.FIELDNAME_REFERENCE_POSITION, 1);
-		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_KNOWN_ALLELE_LIST : AbstractVariantDataV2.FIELDNAME_KNOWN_ALLELE_LIST, 1);
-		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_TYPE : AbstractVariantDataV2.FIELDNAME_TYPE, 1);
-		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_SYNONYMS : VariantRunDataV2.FIELDNAME_SYNONYMS, 1);
-		projection.append(!fV2Model ? AbstractVariantData.FIELDNAME_ANALYSIS_METHODS : VariantRunDataV2.FIELDNAME_ANALYSIS_METHODS, 1);
-		for (GenotypingSample sp : samplesToExport) {
-			if (fV2Model)
-				projection.append(VariantRunDataV2.FIELDNAME_SAMPLEGENOTYPES + "." + sp.getId() + "." + SampleGenotype.FIELDNAME_GENOTYPECODE, 1);
-			else
-				projection.append(VariantRunData.FIELDNAME_GENOTYPES + "." + sp.getId(), 1);
-		}
-		
 		Number avgObjSize = (Number) mongoTemplate.getDb().runCommand(new Document("collStats", mongoTemplate.getCollectionName(VariantRunData.class))).get("avgObjSize");
 		int nQueryChunkSize = (int) Math.max(1, (nMaxChunkSizeInMb*1024*1024 / avgObjSize.doubleValue()));
 		
 //		long b4 = System.currentTimeMillis();
-		MongoCursor markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, collWithPojoCodec, runVersionType, varQuery, samplesToExport, false, nAssemblyId, nQueryChunkSize);
+		MongoCursor markerCursor = IExportHandler.getVariantCursorSortedWithCollation(mongoTemplate, runCollWithPojoCodec, fV2Model ? VariantRunDataV2.class : VariantRunData.class, varQuery, samplesToExport, false, nAssemblyId, nQueryChunkSize);
 //		LOG.debug("cursor obtained in " + (System.currentTimeMillis() - b4) + "ms");
 		LinkedHashMap<String, List<Object>> markerRunsToWrite = new LinkedHashMap<>();
 
