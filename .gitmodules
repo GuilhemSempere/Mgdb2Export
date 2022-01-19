@@ -1,3 +1,4 @@
 [submodule "Mgdb2"]
 	path = Mgdb2
 	url = https://github.com/SouthGreenPlatform/Mgdb2
+	branch = submodules
