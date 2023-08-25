@@ -208,7 +208,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
     	                    snpFileWriter.write(idOfVarToWrite + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + 0 + "\t" + (rp == null ? 0 : rp.getStartSite()) + LINE_SEPARATOR);
 
-    		                LinkedHashSet<String>[] individualGenotypes = new LinkedHashSet[individualPositions.size()];
+    		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
     		                if (runsToWrite != null)
 	    		                runsToWrite.forEach(run -> {
 	    	                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
@@ -224,37 +224,18 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 	    									continue;	// skip genotype
 	
 	    								if (individualGenotypes[individualIndex] == null)
-	    									individualGenotypes[individualIndex] = new LinkedHashSet<String>();
+	    									individualGenotypes[individualIndex] = new ArrayList<String>();
 	    								individualGenotypes[individualIndex].add(gtCode);
 	    	                        }
 	    	                    });
 
     	                    boolean fFirstLoopExecution = true;
     		                for (String individual : individualPositions.keySet() /* we use this list because it has the proper ordering */) {
-    		                    int individualIndex = individualPositions.get(individual);
-                                String mostFrequentGenotype = null;
-                                HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();   // will help us to keep track of missing genotypes
-                                if (individualGenotypes[individualIndex] != null) {
-                                    if (individualGenotypes[individualIndex].size() == 1)
-                                        mostFrequentGenotype = individualGenotypes[individualIndex].iterator().next();
-                                    else {
-                                        int highestGenotypeCount = 0;
-        
-                                        for (String genotype : individualGenotypes[individualIndex]) {
-                                            if (genotype == null) {
-                                                continue;   /* skip missing genotypes */
-                                            }
-                    
-                                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-                                            if (gtCount > highestGenotypeCount) {
-                                                highestGenotypeCount = gtCount;
-                                                mostFrequentGenotype = genotype;
-                                            }
-                                            genotypeCounts.put(genotype, gtCount);
-                                        }
-                                    }
-                                }
-                
+    		                	String mostFrequentGenotype = null;
+    		                    LinkedHashMap<Object, Integer> genotypeCounts = sortGenotypesFromMostFound(individualGenotypes[individualPositions.get(individual)]);
+                                if (genotypeCounts.size() == 1 || genotypeCounts.values().stream().limit(2).distinct().count() == 2)
+                                	mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
+
                                 long nAlleleCount = 0;
                                 byte nOutputCode = 0;
                                 if (mostFrequentGenotype == null)
@@ -266,20 +247,16 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
                                             nOutputCode++;
                                     }
                                 }
-        
-                                if (fFirstLoopExecution && variant.getKnownAlleles().size() > 2) {
-                                    warningFileWriter.write("- Variant " + variant.getVariantId() + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n");
-                                }
-                                sb.append(nOutputCode);
-        
-                                if (genotypeCounts.size() > 1) {
-                                    List<Integer> reverseSortedGtCounts = genotypeCounts.values().stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
-                                    if (reverseSortedGtCounts.get(0) == reverseSortedGtCounts.get(1))
-                                        mostFrequentGenotype = null;
-                                    warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + nOutputCode) + "\n");
-                                }
+
+                                if (genotypeCounts.size() > 1)
+                                	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + nOutputCode) + "\n");
                                 if (nAlleleCount > 2)
                                     warningFileWriter.write("- More than 2 alleles found for variant " + idOfVarToWrite + ", individual " + individual + ". Exporting only the first 2 alleles.\n");
+
+                                if (fFirstLoopExecution && variant.getKnownAlleles().size() > 2)
+                                    warningFileWriter.write("- Variant " + variant.getVariantId() + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n");
+
+                                sb.append(nOutputCode);        
                                 fFirstLoopExecution = false;
 		                    }
 		                    sb.append(LINE_SEPARATOR);

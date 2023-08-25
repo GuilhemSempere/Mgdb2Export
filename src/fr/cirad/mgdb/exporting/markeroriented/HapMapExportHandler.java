@@ -25,11 +25,9 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -57,7 +55,6 @@ import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.tools.AlphaNumericComparator;
-import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.variant.variantcontext.VariantContext.Type;
@@ -155,7 +152,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
 			public void run() {				
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
-                HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();	// will help us to keep track of missing genotypes
                 markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
 					if (progress.isAborted() || progress.getError() != null)
@@ -175,7 +171,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
 						sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA");
 
-		                LinkedHashSet<String>[] individualGenotypes = new LinkedHashSet[individualPositions.size()];
+		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
 
 		                if (runsToWrite != null)
 		                	runsToWrite.forEach( run -> {
@@ -192,7 +188,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 										continue;	// skip genotype
 									
 									if (individualGenotypes[individualIndex] == null)
-										individualGenotypes[individualIndex] = new LinkedHashSet<String>();
+										individualGenotypes[individualIndex] = new ArrayList<String>();
 									individualGenotypes[individualIndex].add(gtCode);
 		                        }
 		                    });
@@ -207,42 +203,23 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                        writtenGenotypeCount++;
 		                    }
 
-		                    genotypeCounts.clear();
-		                    int highestGenotypeCount = 0;
-		                    String mostFrequentGenotype = null;
-		                    if (individualGenotypes[individualIndex] != null) {
-                                if (individualGenotypes[individualIndex].size() == 1)
-                                    mostFrequentGenotype = individualGenotypes[individualIndex].iterator().next();
-                                else {
-    		                        for (String genotype : individualGenotypes[individualIndex]) {
-    		                            if (genotype == null)
-    		                                continue;	/* skip missing genotypes */
-    	
-    		                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-    		                            if (gtCount > highestGenotypeCount) {
-    		                                highestGenotypeCount = gtCount;
-    		                                mostFrequentGenotype = genotype;
-    		                            }
-    		                            genotypeCounts.put(genotype, gtCount);
-    		                        }
-                                }
-		                    }
+		                	String mostFrequentGenotype = null;
+		                    LinkedHashMap<Object, Integer> genotypeCounts = AbstractMarkerOrientedExportHandler.sortGenotypesFromMostFound(individualGenotypes[individualPositions.get(individual)]);
+                            if (genotypeCounts.size() == 1 || genotypeCounts.values().stream().limit(2).distinct().count() == 2)
+                            	mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
 
 		                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : genotypeStringCache.get(mostFrequentGenotype);
 		                    if (exportedGT == null) {
 		                    	exportedGT = StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), fIsSNP ? "" : "/");
 		                    	genotypeStringCache.put(mostFrequentGenotype, exportedGT);
 		                    }
+		                    
+		                    if (genotypeCounts.size() > 1)
+		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n");
+
 		                    sb.append("\t");
 		                    sb.append(exportedGT);
 		                    writtenGenotypeCount++;
-	
-		                    if (genotypeCounts.size() > 1) {
-                                List<Integer> reverseSortedGtCounts = genotypeCounts.values().stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
-                                if (reverseSortedGtCounts.get(0) == reverseSortedGtCounts.get(1))
-                                    mostFrequentGenotype = null;
-		                        warningFileWriter.write("- Dissimilar genotypes found for variant " + /*(variantId == null ? variant.getId() : */idOfVarToWrite/*)*/ + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + new String(exportedGT)) + "\n");
-                            }
 		                }
 	
 		                while (writtenGenotypeCount < individualPositions.size()) {

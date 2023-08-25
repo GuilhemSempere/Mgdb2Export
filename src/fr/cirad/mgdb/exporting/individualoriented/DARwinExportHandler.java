@@ -151,8 +151,6 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 exportedIndividuals.add(scanner.nextLine());
             }
         LinkedHashMap<String, Individual> indMap = MgdbDao.getInstance().loadIndividualsWithAllMetadata(sModule, sExportingUser, null, exportedIndividuals);
-
-        TreeMap<Integer, Comparable> problematicMarkerIndexToNameMap = new TreeMap<Integer, Comparable>();
         ArrayList<String> distinctAlleles = new ArrayList<String>();    // the index of each allele will be used as its code
         String[] donFileContents = new String[indMap.size()];
 
@@ -200,40 +198,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                             int nMarkerIndex = 0;
 
                             while ((line = in.readLine()) != null) {
-                                String mostFrequentGenotype = null;
-                                if (!line.isEmpty()) {
-                                    List<String> genotypes = Helper.split(line, "|");
-                                    if (genotypes.size() == 1)
-                                        mostFrequentGenotype = genotypes.get(0);
-                                    else {
-                                        HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();   // will help us to keep track of missing genotypes
-                                        int highestGenotypeCount = 0;
-        
-                                        for (String genotype : genotypes) {
-                                            if (genotype == null) {
-                                                continue;   /* skip missing genotypes */
-                                            }
-                    
-                                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-                                            if (gtCount > highestGenotypeCount) {
-                                                highestGenotypeCount = gtCount;
-                                                mostFrequentGenotype = genotype;
-                                            }
-                                            genotypeCounts.put(genotype, gtCount);
-                                        }
-                    
-                                        if (genotypeCounts.size() > 1) {
-                                            if (warningFileWriter != null){
-                                                List<Integer> reverseSortedGtCounts = genotypeCounts.values().stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
-                                                if (reverseSortedGtCounts.get(0) == reverseSortedGtCounts.get(1))
-                                                    mostFrequentGenotype = null;
-                                                warningFileWriter.write("- Dissimilar genotypes found for variant n. " + nMarkerIndex + ", individual " + individualId + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + mostFrequentGenotype) + "\n");
-                                            }
-                                            problematicMarkerIndexToNameMap.put(nMarkerIndex, "");
-                                        }
-                                    }
-                                }
-
+                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningFileWriter, nMarkerIndex, individualId);
                                 String codedGenotype = "";
                                 if (mostFrequentGenotype != null && mostFrequentGenotype.length() > 0) {
                                     for (String allele : mostFrequentGenotype.split(" ")) {
@@ -307,26 +272,6 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         for (String donIndLine : donFileContents)
             os.write(donIndLine.getBytes());
 
-//        // now read variant names for those that induced warnings
-//        int nMarkerIndex = 0;
-//        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, nQueryChunkSize)) {
-//            while (markerCursor.hasNext()) {
-//                Document exportVariant = markerCursor.next();
-//                if (problematicMarkerIndexToNameMap.containsKey(nMarkerIndex)) {
-//                    Comparable markerId = (Comparable) exportVariant.get("_id");
-//    
-//                    if (markerSynonyms != null) {
-//                        Comparable syn = markerSynonyms.get(markerId);
-//                        if (syn != null)
-//                            markerId = syn;
-//                    }
-//                    for (int j = 0; j < ploidy; j++)
-//                        zos.write(("\t" + markerId).getBytes());
-//    
-//                    problematicMarkerIndexToNameMap.put(nMarkerIndex, markerId);
-//                }
-//            }
-//        }
         os.closeEntry();
 
         warningFileWriter.close();

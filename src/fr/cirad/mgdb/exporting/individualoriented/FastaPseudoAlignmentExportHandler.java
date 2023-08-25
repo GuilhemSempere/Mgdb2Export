@@ -26,14 +26,11 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -113,7 +110,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
+//		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
 		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualExportFiles.length + "individuals";
         
@@ -132,7 +129,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
         
         zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
         zos.write(getHeaderlines(individualExportFiles.length, (int) markerCount).getBytes());
-        TreeMap<Integer, Comparable> problematicMarkerIndexToNameMap = writeGenotypeFile(zos, sModule, exportedIndividuals, nQueryChunkSize, null, varQuery, markerSynonyms, individualExportFiles, warningFileWriter, progress);
+        writeGenotypeFile(zos, sModule, exportedIndividuals, nQueryChunkSize, null, varQuery, markerSynonyms, individualExportFiles, warningFileWriter, progress);
         zos.write(getFooterlines().getBytes());
     	zos.closeEntry();
     	
@@ -185,8 +182,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
         progress.setCurrentStepProgress((short) 100);
     }
 
-	public TreeMap<Integer, Comparable> writeGenotypeFile(OutputStream os, String sModule, Collection<String> individualsToExport, int nQueryChunkSize, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
-        TreeMap<Integer, Comparable> problematicMarkerIndexToNameMap = new TreeMap<Integer, Comparable>();
+	public void writeGenotypeFile(OutputStream os, String sModule, Collection<String> individualsToExport, int nQueryChunkSize, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
         short nProgress = 0, nPreviousProgress = 0;
         
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());	// use multiple threads so we can prepare several lines at once
@@ -199,7 +195,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
             int nWrittenIndividualCount = 0;
 	        for (final File f : individualExportFiles) {
 	            if (progress.isAborted() || progress.getError() != null)
-	            	return null;
+	            	return;
 
 	        	final int nThreadIndex = i % nNConcurrentThreads;
 	            Thread thread = new Thread() {
@@ -224,46 +220,10 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 			
 			                int nMarkerIndex = 0;
 			                while ((line = in.readLine()) != null) {
-                                String mostFrequentGenotype = null;
-                                if (!line.isEmpty()) {
-                                    List<String> genotypes = Helper.split(line, "|");
-                                    if (genotypes.size() == 1)
-                                        mostFrequentGenotype = genotypes.get(0);
-                                    else {
-                                        HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();   // will help us to keep track of missing genotypes
-                                        int highestGenotypeCount = 0;
-        
-                                        for (String genotype : genotypes) {
-                                            if (genotype == null) {
-                                                continue;   /* skip missing genotypes */
-                                            }
-                    
-                                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-                                            if (gtCount > highestGenotypeCount) {
-                                                highestGenotypeCount = gtCount;
-                                                mostFrequentGenotype = genotype;
-                                            }
-                                            genotypeCounts.put(genotype, gtCount);
-                                        }
-                    
-                                        if (genotypeCounts.size() > 1) {
-                                            List<Integer> reverseSortedGtCounts = genotypeCounts.values().stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
-                                            if (reverseSortedGtCounts.get(0) == reverseSortedGtCounts.get(1))
-                                                mostFrequentGenotype = null;
-                                            if (warningFileWriter != null)
-                                                warningFileWriter.write("- Dissimilar genotypes found for variant n. " + nMarkerIndex + ", individual " + individualId + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + mostFrequentGenotype) + "\n");
-                                            if (mostFrequentGenotype == null)
-                                                problematicMarkerIndexToNameMap.put(nMarkerIndex, "");
-                                        }
-                                    }
-                                }
-			
+                                String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningFileWriter, nMarkerIndex, individualId);
 			                    String[] alleles = mostFrequentGenotype == null ? new String[0] : mostFrequentGenotype.replaceAll("\\*", "-").split(" ");
-			                    if (alleles.length > 2) {
-			                    	if (warningFileWriter != null)
-			                    		warningFileWriter.write("- More than 2 alleles found for variant n. " + nMarkerIndex + ", individual " + individualId + ". Exporting only the first 2 alleles.\n");
-			                        problematicMarkerIndexToNameMap.put(nMarkerIndex, "");
-			                    }
+			                    if (alleles.length > 2 && warningFileWriter != null)
+			                    	warningFileWriter.write("- More than 2 alleles found for variant n. " + nMarkerIndex + ", individual " + individualId + ". Exporting only the first 2 alleles.\n");
 			
 			                    String all1 = alleles.length == 0 ? getMissingAlleleString() : alleles[0];
 			                    String all2 = alleles.length == 0 ? getMissingAlleleString() : alleles[alleles.length == 1 ? 0 : 1];
@@ -323,8 +283,6 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
         }
     	if (warningFileWriter != null)
     		warningFileWriter.close();
-
-        return problematicMarkerIndexToNameMap;
     }
 
     protected String getMissingAlleleString() {

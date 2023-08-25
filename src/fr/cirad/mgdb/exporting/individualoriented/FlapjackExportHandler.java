@@ -26,14 +26,11 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -53,7 +50,6 @@ import fr.cirad.mgdb.model.mongo.maintypes.Individual;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData.VariantRunDataId;
-import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
@@ -117,7 +113,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
         }
 
         zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
-        /*TreeMap<Integer, Comparable> problematicMarkerIndexToNameMap = */writeGenotypeFile(zos, sModule, nAssemblyId, nQueryChunkSize, varColl, varQuery, markerSynonyms, individualExportFiles, warningFileWriter, progress);
+        writeGenotypeFile(zos, sModule, nAssemblyId, nQueryChunkSize, varColl, varQuery, markerSynonyms, individualExportFiles, warningFileWriter, progress);
     	zos.closeEntry();
 
 
@@ -150,15 +146,6 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                 zos.write((pos == null ? "0" : pos.toString()).getBytes());
                 zos.write(LINE_SEPARATOR.getBytes());
     
-//              if (problematicMarkerIndexToNameMap.containsKey(nMarkerIndex)) {    // we are going to need this marker's name for the warning file
-//                  String variantName = markerId;
-//                  if (markerSynonyms != null) {
-//                      String syn = markerSynonyms.get(markerId);
-//                      if (syn != null)
-//                          variantName = syn;
-//                  }
-//                  problematicMarkerIndexToNameMap.put(nMarkerIndex, variantName);
-//              }
                 progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
             }
         }
@@ -191,7 +178,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
         progress.setCurrentStepProgress((short) 100);
     }
 
-    public TreeMap<Integer, String> writeGenotypeFile(OutputStream os, String sModule, Integer nAssemblyId, int nQueryChunkSize, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
+    public void writeGenotypeFile(OutputStream os, String sModule, Integer nAssemblyId, int nQueryChunkSize, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
    		os.write(("# fjFile = GENOTYPE" + LINE_SEPARATOR).getBytes());
         
    		boolean fWorkingOnRuns = varColl.getNamespace().getCollectionName().equals(MongoTemplateManager.getMongoCollectionName(VariantRunData.class));
@@ -213,7 +200,6 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
         os.write(LINE_SEPARATOR.getBytes());
 
-        TreeMap<Integer, String> problematicMarkerIndexToNameMap = new TreeMap<>();
         short nProgress = 0, nPreviousProgress = 0;
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());   // use multiple threads so we can prepare several lines at once
         HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
@@ -226,7 +212,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
             int nWrittenIndividualCount = 0;
             for (final File f : individualExportFiles) {
                 if (progress.isAborted() || progress.getError() != null)
-                    return null;
+                    return;
 
                 final int nThreadIndex = i % nNConcurrentThreads;
                 Thread thread = new Thread() {
@@ -250,40 +236,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
                             int nMarkerIndex = 0;
                             while ((line = in.readLine()) != null) {
-                                String mostFrequentGenotype = null;
-                                if (!line.isEmpty()) {
-                                    List<String> genotypes = Helper.split(line, "|");
-                                    if (genotypes.size() == 1)
-                                        mostFrequentGenotype = genotypes.get(0);
-                                    else {
-                                        HashMap<Object, Integer> genotypeCounts = new HashMap<Object, Integer>();   // will help us to keep track of missing genotypes
-                                        int highestGenotypeCount = 0;
-        
-                                        for (String genotype : genotypes) {
-                                            if (genotype == null) {
-                                                continue;   /* skip missing genotypes */
-                                            }
-                    
-                                            int gtCount = 1 + Helper.getCountForKey(genotypeCounts, genotype);
-                                            if (gtCount > highestGenotypeCount) {
-                                                highestGenotypeCount = gtCount;
-                                                mostFrequentGenotype = genotype;
-                                            }
-                                            genotypeCounts.put(genotype, gtCount);
-                                        }
-                    
-                                        if (genotypeCounts.size() > 1) {
-                                            List<Integer> reverseSortedGtCounts = genotypeCounts.values().stream().sorted(Comparator.reverseOrder()).collect(Collectors.toList());
-                                            if (reverseSortedGtCounts.get(0) == reverseSortedGtCounts.get(1))
-                                                mostFrequentGenotype = null;
-                                            if (warningFileWriter != null)
-                                                warningFileWriter.write("- Dissimilar genotypes found for variant n. " + nMarkerIndex + ", individual " + individualId + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + mostFrequentGenotype) + "\n");
-                                            if (mostFrequentGenotype != null)
-                                                problematicMarkerIndexToNameMap.put(nMarkerIndex, "");
-                                        }
-                                    }
-                                }
-            
+                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningFileWriter, nMarkerIndex, individualId);
                                 List<String> alleles = mostFrequentGenotype == null ? new ArrayList<>() : Helper.split(mostFrequentGenotype, " ");
                                 if (alleles.size() == 0 || (alleles.size() == 1 && alleles.get(0).length() == 0))
                                     indLine.append("\t-");
@@ -350,8 +303,6 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
         }
         if (warningFileWriter != null)
             warningFileWriter.close();
-
-        return problematicMarkerIndexToNameMap;
     }
 
     /* (non-Javadoc)
