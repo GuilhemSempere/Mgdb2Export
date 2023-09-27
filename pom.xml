@@ -10,14 +10,14 @@
     </properties>
     
     <groupId>fr.cirad</groupId>
-    <artifactId>mgdb2_export</artifactId>
+    <artifactId>Mgdb2Export</artifactId>
     <version>${project.version}</version>
     <packaging>jar</packaging>
     
     <dependencies>
         <dependency>
             <groupId>fr.cirad</groupId>
-            <artifactId>mgdb2</artifactId>
+            <artifactId>Mgdb2</artifactId>
             <version>${mgdb.version}</version>
         </dependency>
     </dependencies>
@@ -27,9 +27,11 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
-                <version>2.3.2</version>
+                <version>3.9.0</version>
                 <configuration>
                     <encoding>${project.build.sourceEncoding}</encoding>
+                    <source>17</source>
+					<target>17</target>
                 </configuration>
             </plugin>
             <plugin>
