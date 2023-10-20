@@ -148,11 +148,13 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         }
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
         List<String> samplePops = new ArrayList<>();
+        Map<String, String> SampleToIndiPops = new LinkedHashMap<>();//<individual, population>
         zos.putNextEntry(new ZipEntry(exportName + ".popnames"));
        
         for (String individual : sampleIdToIndividualMap.values()) {
 			String pop = allIndividualPops.get(individual);
 			if (pop != null) {
+				SampleToIndiPops.put(individual, pop);
                 if (!samplePops.contains(pop.toString())) {
                 	samplePops.add(pop.toString());
                 }
@@ -243,7 +245,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		                        mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
 		                    }
 		                    if(mostFrequentGenotype != null) {
-		                    	String population = allIndividualPops.get(individual);
+		                    	String population = SampleToIndiPops.get(individual);
 
 		                    	Pattern pattern = Pattern.compile("(\\d)/(\\d)");
 		                        Matcher matcher = pattern.matcher(mostFrequentGenotype);
@@ -255,7 +257,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 //			                        	  int value = nbAllel0.getOrDefault(population, 0);
 //			                        	  value += 2;
 //			                        	  nbAllel0.put(population, value);
-			                              nbAllel0.put(population, nbAllel0.getOrDefault(individual, 0) + 2);
+			                              nbAllel0.put(population, nbAllel0.getOrDefault(population, 0) + 2);
 			                          } else if (gtA1 == 0 || gtA2 == 0) {
 			                              nbAllel0.put(population, nbAllel0.getOrDefault(population, 0) + 1);
 			                              nbAllel1.put(population, nbAllel1.getOrDefault(population, 0) + 1);
@@ -291,21 +293,23 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		                
 		                
 		                for (String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
+		                	int nb0 = 0;
+		                	int nb1 = 0;
 		                	if (!nbAllel0.isEmpty()) {
-		                		int nb0 = nbAllel0.getOrDefault(pop, 0);
+		                		nb0 = nbAllel0.getOrDefault(pop, 0);
 
 //		                		int nb0 = nbAllel0.get(pop);
-		                		sb.append(nb0);
-			                    sb.append("\t");
 		                	}
+		                	sb.append(nb0);
+		                    sb.append("\t");
 		                	if (!nbAllel1.isEmpty()) {
-		                		int nb1 = nbAllel1.getOrDefault(pop, 0);
+		                		nb1 = nbAllel1.getOrDefault(pop, 0);
 
 //		                		int nb1 = nbAllel1.get(pop);
-			                    sb.append(nb1);
-			                    sb.append("\t");
-
+			                    
 		                	}
+		                	sb.append(nb1);
+		                    sb.append("\t");
 	
 		                    
 		                    
