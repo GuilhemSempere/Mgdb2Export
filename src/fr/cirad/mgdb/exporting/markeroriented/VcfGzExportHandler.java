@@ -16,48 +16,24 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.markeroriented;
 
-import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoCursor;
-import fr.cirad.mgdb.exporting.AbstractExportWritingThread;
-import fr.cirad.mgdb.exporting.IExportHandler;
-import fr.cirad.mgdb.exporting.tools.ExportManager;
-import fr.cirad.mgdb.model.mongo.maintypes.*;
-import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
-import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
-import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
-import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.tools.AlphaNumericComparator;
-import fr.cirad.tools.Helper;
-import fr.cirad.tools.ProgressIndicator;
-import fr.cirad.tools.mongo.MongoTemplateManager;
+import java.io.File;
+import java.io.OutputStream;
+import java.util.Arrays;
+import java.util.List;
+import java.util.zip.Deflater;
+
+import org.apache.log4j.Logger;
+
 import htsjdk.samtools.SAMSequenceDictionary;
-import htsjdk.samtools.SAMSequenceRecord;
 import htsjdk.samtools.util.BlockCompressedOutputStream;
-import htsjdk.variant.variantcontext.VariantContext;
+import htsjdk.samtools.util.zip.DeflaterFactory;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
 import htsjdk.variant.variantcontext.writer.VariantContextWriter;
-import htsjdk.variant.vcf.*;
-import org.apache.log4j.Logger;
-import org.bson.Document;
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
-
-import java.io.*;
-import java.nio.file.Path;
-import java.nio.file.Paths;
-import java.util.*;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipOutputStream;
 
 /**
  * The Class VcfExportHandler.
  */
-public class VcfGzExportHandler extends AbstractMarkerOrientedExportHandler {
+public class VcfGzExportHandler extends VcfExportHandler {
 
 	/** The Constant LOG. */
 	private static final Logger LOG = Logger.getLogger(VcfGzExportHandler.class);
@@ -77,7 +53,7 @@ public class VcfGzExportHandler extends AbstractMarkerOrientedExportHandler {
 	@Override
 	public String getExportFormatDescription()
 	{
-		return "Exports data in Variant Call Format. See <a target='_blank' href='http://samtools.github.io/hts-specs/VCFv4.1.pdf'>http://samtools.github.io/hts-specs/VCFv4.1.pdf</a> for more details.";
+		return "Exports data in bgzipped Variant Call Format. See <a target='_blank' href='http://samtools.github.io/hts-specs/VCFv4.1.pdf'>http://samtools.github.io/hts-specs/VCFv4.1.pdf</a> and <a target='_blank' href='http://www.htslib.org/doc/bgzip.html'>http://www.htslib.org/doc/bgzip.html</a> for more details.";
 	}
 
 	/* (non-Javadoc)
@@ -90,284 +66,12 @@ public class VcfGzExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 	
 	@Override
-	public String getExportArchiveExtension() {
-		return "zip";
-	}
-
-	/**
-	 * Creates the sam sequence dictionary.
-	 *
-	 * @param sModule the module
-	 * @param sequenceIDs the sequence IDs
-	 * @return the SAM sequence dictionary
-	 * @throws Exception the exception
-	 */
-	public SAMSequenceDictionary createSAMSequenceDictionary(String sModule, Collection<String> sequenceIDs) throws Exception
-	{
-		SAMSequenceDictionary dict1 = new SAMSequenceDictionary();
-		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		if (mongoTemplate.collectionExists(MongoTemplateManager.getMongoCollectionName(Sequence.class))) {
-			long before = System.currentTimeMillis();
-			Query query = sequenceIDs.isEmpty() ? new Query() : new Query(Criteria.where("_id").in(sequenceIDs));
-			query.fields().include(Sequence.FIELDNAME_LENGTH).include(Sequence.FIELDNAME_ASSEMBLY);
-			for (Sequence seq : MongoTemplateManager.get(sModule).find(query, Sequence.class))
-				dict1.addSequence(new SAMSequenceRecord((String) seq.getId(), (int) seq.getLength()) {{setAssembly(seq.getAssembly());}} );
-	    	LOG.info("createSAMSequenceDictionary took " + (System.currentTimeMillis() - before)/1000d + "s to write " + sequenceIDs.size() + " sequences");
-		}
-		else
-			LOG.info("No sequence data was found. No SAMSequenceDictionary could be created.");
-	    return dict1;
-	}
-
-    @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
-
-		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		File warningFile = File.createTempFile("export_warnings_", "");
-		FileWriter warningFileWriter = new FileWriter(warningFile);
-		ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-        
-        Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
-        
-        if (individualMetadataFieldsToExport != null && !individualMetadataFieldsToExport.isEmpty()) {
-        	zos.putNextEntry(new ZipEntry(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv"));
-        	zos.write("individual".getBytes());
-	        IExportHandler.writeMetadataFile(sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos);
-	    	zos.closeEntry();
-        }
-        
-        String refPosPathWithTrailingDot = Assembly.getVariantRefPosPath(nAssemblyId) + ".";
-        
-    	VariantContextWriter writer = null;		
-		try {
-			List<String> distinctSequenceNames = new ArrayList<String>();
-
-//				String sequenceSeqCollName = MongoTemplateManager.getMongoCollectionName(Sequence.class);
-//				if (mongoTemplate.collectionExists(sequenceSeqCollName))
-//					try (MongoCursor<Document> markerCursor = IExportHandler.getSortedExportCursor(mongoTemplate, collWithPojoCodec, Document.class, varQuery, null, true, nQueryChunkSize)) {
-//						while (markerCursor.hasNext())
-//						{
-//							int nLoadedMarkerCountInLoop = 0;
-//							boolean fStartingNewChunk = true;
-//							while (markerCursor.hasNext() && (fStartingNewChunk || nLoadedMarkerCountInLoop%nQueryChunkSize != 0)) {
-//								Document exportVariant = markerCursor.next();
-//								String chr = (String) ((Document) exportVariant.get(VariantData.FIELDNAME_REFERENCE_POSITION)).get(ReferencePosition.FIELDNAME_SEQUENCE);
-//								if (chr != null && !distinctSequenceNames.contains(chr))
-//									distinctSequenceNames.add(chr);
-//							}
-//						}
-//					}
-//					else {
-					for (Object chr : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class)).distinct(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, varQuery, String.class))	// find out distinctSequenceNames by looking at exported variant list
-						if (chr != null)
-							distinctSequenceNames.add(chr.toString());
-//					}
-
-			Collections.sort(distinctSequenceNames, new AlphaNumericComparator());
-			SAMSequenceDictionary dict = createSAMSequenceDictionary(sModule, distinctSequenceNames);
-			Path outputPath = Paths.get(exportName + ".vcf.gz");
-			BlockCompressedOutputStream bcos = new BlockCompressedOutputStream(outputPath.toFile());
-			writer = new CustomVCFWriter(null, bcos, dict, false, false, true);
-			writeGenotypeFile(sModule, nAssemblyId, individuals1, individuals2, progress, tmpVarCollName, varQuery, markerCount, markerSynonyms, annotationFieldThresholds, annotationFieldThresholds2, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, warningFileWriter, writer);
-			zos.putNextEntry(new ZipEntry(exportName + ".vcf.gz"));
-			InputStream fis = new FileInputStream(outputPath.toFile());
-			byte[] buffer = new byte[4096];
-			int bytesRead;
-			while ((bytesRead = fis.read(buffer)) != -1) {
-				zos.write(buffer, 0, bytesRead);
-			}
-			zos.closeEntry();
-		}
-		catch (Exception e)
-		{
-			LOG.error("Error exporting", e);
-			progress.setError(e.getMessage());
-			return;
-		}
-		finally
-		{
-			zos.closeEntry();
-
-			warningFileWriter.close();
-			if (warningFile.length() > 0) {
-				zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-				int nWarningCount = 0;
-				BufferedReader in = new BufferedReader(new FileReader(warningFile));
-				String sLine;
-				while ((sLine = in.readLine()) != null) {
-					zos.write((sLine + "\n").getBytes());
-					nWarningCount++;
-				}
-				LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-				in.close();
-				zos.closeEntry();
-			}
-			warningFile.delete();
-
-			if (writer != null)
-				try
-				{
-					zos.finish();
-					writer.close();
-				}
-				catch (Throwable ignored)
-				{}
-		}
-    }
-		
-    public void writeGenotypeFile(String sModule, Integer nAssemblyId, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, FileWriter warningFileWriter, VariantContextWriter writer) throws Exception {
-    	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		Integer projectId = null;
-		
-		for (GenotypingSample sample : samplesToExport) {
-			if (projectId == null)
-				projectId = sample.getProjectId();
-			else if (projectId != sample.getProjectId())
-			{
-				projectId = 0;
-				break;	// more than one project are involved: no header will be written
-			}
-		}
-		
-	    Map<String, Integer> individualPositions = new LinkedHashMap<>();
-        for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-            individualPositions.put(ind, individualPositions.size());
-
-//			VariantContextWriterBuilder vcwb = new VariantContextWriterBuilder();
-//			vcwb.unsetOption(Options.INDEX_ON_THE_FLY);
-//			vcwb.unsetOption(Options.DO_NOT_WRITE_GENOTYPES);
-//			vcwb.setOption(Options.USE_ASYNC_IOINDEX_ON_THE_FLY);
-//			vcwb.setOption(Options.ALLOW_MISSING_FIELDS_IN_HEADER);
-//			vcwb.setReferenceDictionary(dict);
-//			writer = vcwb.build();
-//			writer = new AsyncVariantContextWriter(writer, 3000);
-
-		progress.moveToNextStep();	// done with dictionary
-		MongoCollection<Document> vcfHeaderColl = mongoTemplate.getCollection(MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class));
-		Document vcfHeaderQuery = new Document("_id." + VcfHeaderId.FIELDNAME_PROJECT, projectId);
-		long nHeaderCount = vcfHeaderColl.countDocuments(vcfHeaderQuery);
-		MongoCursor<Document> headerCursor = vcfHeaderColl.find(vcfHeaderQuery).iterator();
-		Set<VCFHeaderLine> headerLines = new HashSet<VCFHeaderLine>();
-		boolean fWriteCommandLine = true, fWriteEngineHeaders = true;	// default values
-
-		while (headerCursor.hasNext()) {
-			DBVCFHeader dbVcfHeader = DBVCFHeader.fromDocument(headerCursor.next());
-			headerLines.addAll(dbVcfHeader.getHeaderLines());
-
-			fWriteCommandLine = nHeaderCount == 1 && dbVcfHeader.getWriteCommandLine();	// wouldn't make sense to include command lines for several runs
-			if (!dbVcfHeader.getWriteEngineHeaders())
-				fWriteEngineHeaders = false;
-		}
-		headerCursor.close();
-
-		if (headerLines.size() == 0)
-			headerLines.add(new VCFFormatHeaderLine("GT", 1, VCFHeaderLineType.String, "Genotype"));	// minimum required
-		
-		// Add sequence header lines (not stored in our vcf header collection)
-		int nSequenceIndex = 0;
-		String sequenceInfoCollName = MongoTemplateManager.getMongoCollectionName(SequenceStats.class);
-		boolean fCollectionExists = mongoTemplate.collectionExists(sequenceInfoCollName);
-		for (String sequenceName : distinctSequenceNames) {
-			Map<String, String> sequenceLineData = new LinkedHashMap<String, String>();
-			if (fCollectionExists) { /* this should not happen anymore (relates to Gigwa V1's contig management section) */
-				Document record = mongoTemplate.getCollection(sequenceInfoCollName).find(new Query(Criteria.where("_id").is(sequenceName)).getQueryObject()).projection(new Document(SequenceStats.FIELDNAME_SEQUENCE_LENGTH, true)).first();
-				if (record == null) {
-					LOG.warn("Sequence '" + sequenceName + "' not found in collection " + sequenceInfoCollName);
-					continue;
-				}
-				sequenceLineData.put("ID", (String) record.get("_id"));
-				sequenceLineData.put("length", ((Number) record.get(SequenceStats.FIELDNAME_SEQUENCE_LENGTH)).toString());
-			}
-			else {
-				sequenceLineData.put("ID", sequenceName);
-				SAMSequenceRecord dictSeq = dict.getSequence(sequenceName); 
-				if (dictSeq != null) {
-				    if (dictSeq.getSequenceLength() > 0)
-	                    sequenceLineData.put("length", "" + dict.getSequence(sequenceName).getSequenceLength());
-				    String sAssembly = dictSeq.getAssembly();
-                    if (sAssembly != null)
-                        sequenceLineData.put("assembly", sAssembly);
-				}
-			}
-			headerLines.add(new VCFContigHeaderLine(sequenceLineData, nSequenceIndex++));
-		}
-
-		VCFHeader header = new VCFHeader(headerLines, sortedIndividuals);
-		header.setWriteCommandLine(fWriteCommandLine);
-		header.setWriteEngineHeaders(fWriteEngineHeaders);
-		writer.writeHeader(header);
-
-		HashMap<Integer, Object /*phID*/> phasingIDsBySample = new HashMap<>();
-		final VariantContextWriter finalVariantContextWriter = writer;
-		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
-			public void run() {
-				if (markerRunsToWrite.isEmpty())
-					return;
-
-			    ArrayList<ArrayList<Collection<VariantRunData>>> splitVrdColls = Helper.evenlySplitCollection(markerRunsToWrite, Runtime.getRuntime().availableProcessors() - 1);
-			    ArrayList<ArrayList<String>> splitVariantIdColls = Helper.evenlySplitCollection(orderedMarkerIDs, splitVrdColls.size());
-			    
-                VariantContext[][] vcChunks = new VariantContext[splitVrdColls.size()][];
-		        ExecutorService executor = Executors.newFixedThreadPool(vcChunks.length);
-		        for (int i=0; i<vcChunks.length; i++) {
-		            final ArrayList<Collection<VariantRunData>> vrdCollChunk = splitVrdColls.get(i);
-		            final ArrayList<String> variantIdCollChunk = splitVariantIdColls.get(i);
-		            final int nChunkIndex = i;
-		            Thread t = new Thread() {
-		                public void run() {
-                            vcChunks[nChunkIndex] = new VariantContext[vrdCollChunk.size()];		                    
-                            int nVariantIndex = 0;
-		                    for (Collection<VariantRunData> runsToWrite : vrdCollChunk) {
-		                    	String idOfVarToWrite = variantIdCollChunk.get(nVariantIndex);
-		    					if (progress.isAborted() || progress.getError() != null)
-		    						return;
-		    					
-		    					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
-            					try
-            					{
-            		                vcChunks[nChunkIndex][nVariantIndex++] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), samplesToExport, individualPositions, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite));
-            					}
-            					catch (Exception e)
-            					{
-            						if (progress.getError() == null)	// only log this once
-            							LOG.error("Unable to export " + idOfVarToWrite, e);
-            						progress.setError("Unable to export " + idOfVarToWrite + ": " + e.getMessage());
-            					}
-		                    }
-		                }
-		            };
-		            executor.execute(t);
-		        }
-		        executor.shutdown();
-		        try {
-                    executor.awaitTermination(Integer.MAX_VALUE, TimeUnit.DAYS);
-                } catch (InterruptedException e) {
-                    progress.setError(e.getMessage());
-                    LOG.error("Error exporting VCF", e);
-                }
-		        
-		        for (VariantContext[] vcChunk : vcChunks)
-		            for (VariantContext vc : vcChunk)
-	                    finalVariantContextWriter.add(vc);
-			}
-		};
-
-		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
-        String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
-		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName);
-		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, varQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
-		exportManager.readAndWrite();
+	protected VariantContextWriter buildVariantContextWriter(OutputStream os, SAMSequenceDictionary dict) {
+		return new CustomVCFWriter(null, new BlockCompressedOutputStream(os, (File) null, Deflater.BEST_COMPRESSION, new DeflaterFactory()), dict, false, false, true);
 	}
 
     @Override
 	public String[] getExportDataFileExtensions() {
 		return new String[] {"vcf.gz"};
 	}
-
-    @Override
-    public int[] getSupportedPloidyLevels() {
-        return null;
-    }
 }
