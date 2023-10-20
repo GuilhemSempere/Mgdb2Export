@@ -22,8 +22,6 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.zip.Deflater;
 
-import org.apache.log4j.Logger;
-
 import htsjdk.samtools.SAMSequenceDictionary;
 import htsjdk.samtools.util.BlockCompressedOutputStream;
 import htsjdk.samtools.util.zip.DeflaterFactory;
@@ -34,9 +32,6 @@ import htsjdk.variant.variantcontext.writer.VariantContextWriter;
  * The Class VcfExportHandler.
  */
 public class VcfGzExportHandler extends VcfExportHandler {
-
-	/** The Constant LOG. */
-	private static final Logger LOG = Logger.getLogger(VcfGzExportHandler.class);
 
 	/* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()
