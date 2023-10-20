@@ -141,6 +141,10 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			LOG.info("No sequence data was found. No SAMSequenceDictionary could be created.");
 	    return dict1;
 	}
+	
+	protected VariantContextWriter buildVariantContextWriter(OutputStream os, SAMSequenceDictionary dict) {
+		return new CustomVCFWriter(null, os, dict, false, false, true);
+	}
 
     @Override
     public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
@@ -190,8 +194,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 			Collections.sort(distinctSequenceNames, new AlphaNumericComparator());
 			SAMSequenceDictionary dict = createSAMSequenceDictionary(sModule, distinctSequenceNames);
-			writer = new CustomVCFWriter(null, zos, dict, false, false, true);
-			zos.putNextEntry(new ZipEntry(exportName + ".vcf"));
+			writer = buildVariantContextWriter(zos, dict);
+			zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
 			writeGenotypeFile(sModule, nAssemblyId, individuals1, individuals2, progress, tmpVarCollName, varQuery, markerCount, markerSynonyms, annotationFieldThresholds, annotationFieldThresholds2, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, warningFileWriter, writer);
 		}
 		catch (Exception e)
