@@ -30,6 +30,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -46,6 +47,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.AbstractExportWritingThread;
 import fr.cirad.mgdb.exporting.IExportHandler;
@@ -61,7 +63,9 @@ import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
+import fr.cirad.tools.SetUniqueListWithConstructor;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.variant.variantcontext.VariantContext.Type;
 
@@ -104,7 +108,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public String getExportFormatDescription() {
-        return "Exports data in BAYPASS Format. See <a target='_blank' href='https://bitbucket.org/tasseladmin/tassel-5-source/wiki/UserManual/Load/Load'>https://bitbucket.org/tasseladmin/tassel-5-source/wiki/UserManual/Load/Load</a> for more details";
+        return "Exports data in BAYPASS Format. ";
     }
 
 	/* (non-Javadoc)
@@ -160,6 +164,8 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
                 }
             }
         }
+        progress.addStep("Writing popnames file");
+        progress.moveToNextStep();
         for( String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
         	zos.write((pop + "\n").getBytes());
 
@@ -177,9 +183,14 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 
         
         zos.putNextEntry(new ZipEntry(exportName + ".baypass"));
-
+        progress.addStep("Writing baypass file");
+        progress.moveToNextStep();
 		
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
+		ConcurrentHashMap<String, String> ligneMap = new ConcurrentHashMap<String, String>();
+		StringBuilder alleleBuilder = new StringBuilder();
+
+	
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
@@ -191,6 +202,9 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 						return;
 					
 					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
+					
+					
+//					snpMap.put(idOfVarToWrite, variant.getKnownAlleles());
 					StringBuilder sb = new StringBuilder(initialStringBuilderCapacity.get() == 0 ? 3 * individualPositions.size() /* rough estimation */ : initialStringBuilderCapacity.get());
 					try
 					{
@@ -202,6 +216,18 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 
 //		                boolean fIsSNP = variant.getType().equals(Type.SNP.toString());
 		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
+			            Long pos = rp == null ? null : rp.getStartSite();
+			            String chrom = rp == null ? null : (String) rp.getSequence();
+			            SetUniqueListWithConstructor<String> knownAlleles = variant.getKnownAlleles();
+						alleleBuilder.append(chrom == null ? "0" : chrom).append("\t").append(idOfVarToWrite).append("\t").append(0).append("\t").append(pos == null ? 0 : pos).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "\t")).append(LINE_SEPARATOR) ;
+
+//			            alleleBuilder.append(((chrom == null ? "0" : chrom) + " " + idOfVarToWrite + " " + 0 + " " + (pos == null ? 0 : pos)+" " + knownAlleles.get(0) + " " + knownAlleles.get(1) + LINE_SEPARATOR).getBytes());
+			    		String ligne = alleleBuilder.toString();
+			    		try {
+			    			ligneMap.put(idOfVarToWrite, ligne);
+			    		}finally {
+				            alleleBuilder.setLength(0);
+			    		}
 //						sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA");
 
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
@@ -287,11 +313,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		                    writtenGenotypeCount++;
 		                }
 		                
-		                
-		                
-		                
-		                
-		                
+	        
 		                for (String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
 		                	int nb0 = 0;
 		                	int nb1 = 0;
@@ -340,11 +362,69 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 						progress.setError("Unable to export " + idOfVarToWrite + ": " + e.getMessage());
 					}
 				});
+				
+				
 			}
 		};
 		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, varQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
 		exportManager.readAndWrite();
+		
         zos.closeEntry();
+        
+        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+//        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
+        int nMarkerIndex = 0;
+        try {
+        	progress.addStep("Writing map file");
+            progress.moveToNextStep();
+        	for (String variantId : ligneMap.keySet()) {
+        		zos.write(ligneMap.get(variantId).getBytes());
+        		progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+        	}
+        }catch(Exception e) {
+        	LOG.error("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES,e);
+			progress.setError("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES + ": " + e.getMessage());
+			
+        }
+        finally {
+			
+		}
+        
+        zos.closeEntry();
+
+        
+//        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
+//    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+//    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
+//		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), varQuery, projectionAndSortDoc, nQueryChunkSize)) {
+//            progress.addStep("Writing map file");
+//            progress.moveToNextStep();
+//	        while (markerCursor.hasNext()) {
+//	            Document exportVariant = markerCursor.next();
+//	            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
+//	            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+//	            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+//                String markerId = (String) exportVariant.get("_id");
+//	            if (chrom == null)
+//	            	unassignedMarkers.add(markerId);
+//	            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
+////	            List<String[]> resultList = mongoTemplate.find(
+////	            	    new Query(Criteria.where("_id.vi").is("5565456")),
+////	            	    String[].class, "variousnt"
+////	            	);
+//
+//	            List<String[]> knownAlleles = mongoTemplate.find(new Query(Criteria.where("_id."+VariantRunData.VariantRunDataId.FIELDNAME_VARIANT_ID).is(markerId)), String[].class, "variantRunData");
+//	            if(knownAlleles.get(0).length==2) {
+//		            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos)+" " + knownAlleles.get(0)[0] + " " + knownAlleles.get(0)[1] + LINE_SEPARATOR).getBytes());
+//	            }else {
+//	            	LOG.error("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES);
+//					progress.setError("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES);
+//	            }
+//
+//                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+//	        }
+//		}
+//        zos.closeEntry();
         
         warningFileWriter.close();
         if (warningFile.length() > 0) {
