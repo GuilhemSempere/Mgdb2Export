@@ -25,6 +25,7 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -170,15 +171,6 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         	zos.write((pop + "\n").getBytes());
 
         }
-//        for (GenotypingSample sample : samplesToExport) {
-//			String pop = individualPops.get(sample.getIndividual());
-//			if (pop != null) {
-//                if (!samplePops.contains(pop.toString())) {
-//                	samplePops.add(pop.toString());
-//                	zos.write((pop + "\n").getBytes());
-//                }
-//            }
-//        }
         zos.closeEntry();
 
         
@@ -187,10 +179,9 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         progress.moveToNextStep();
 		
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
-		ConcurrentHashMap<String, String> ligneMap = new ConcurrentHashMap<String, String>();
-		StringBuilder alleleBuilder = new StringBuilder();
+		Map<String, String> ligneMap = Collections.synchronizedMap(new LinkedHashMap());
+		StringBuilder ligneBuilder = new StringBuilder();
 
-	
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
@@ -202,9 +193,6 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 						return;
 					
 					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
-					
-					
-//					snpMap.put(idOfVarToWrite, variant.getKnownAlleles());
 					StringBuilder sb = new StringBuilder(initialStringBuilderCapacity.get() == 0 ? 3 * individualPositions.size() /* rough estimation */ : initialStringBuilderCapacity.get());
 					try
 					{
@@ -219,17 +207,10 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 			            Long pos = rp == null ? null : rp.getStartSite();
 			            String chrom = rp == null ? null : (String) rp.getSequence();
 			            SetUniqueListWithConstructor<String> knownAlleles = variant.getKnownAlleles();
-						alleleBuilder.append(chrom == null ? "0" : chrom).append("\t").append(idOfVarToWrite).append("\t").append(0).append("\t").append(pos == null ? 0 : pos).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "\t")).append(LINE_SEPARATOR) ;
-
-//			            alleleBuilder.append(((chrom == null ? "0" : chrom) + " " + idOfVarToWrite + " " + 0 + " " + (pos == null ? 0 : pos)+" " + knownAlleles.get(0) + " " + knownAlleles.get(1) + LINE_SEPARATOR).getBytes());
-			    		String ligne = alleleBuilder.toString();
-			    		try {
-			    			ligneMap.put(idOfVarToWrite, ligne);
-			    		}finally {
-				            alleleBuilder.setLength(0);
-			    		}
+						
+//			    		System.out.println(idOfVarToWrite);
+			    		
 //						sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA");
-
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
 
 		                if (runsToWrite != null)
@@ -291,69 +272,54 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 			                              nbAllel1.put(population, nbAllel1.getOrDefault(population, 0) + 2);
 			                          }
 		                        }
-		                        	
-		                          
-
-//		                        nbAllel0.put(population, nbAllel0.getOrDefault(population, 0) + 1);
 		                    }
-		                    	
-
-//		                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : genotypeStringCache.get(mostFrequentGenotype);
-//		                    if (exportedGT == null) {
-//		                    	exportedGT = StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), fIsSNP ? "" : "/");
-//		                    	genotypeStringCache.put(mostFrequentGenotype, exportedGT);
-//		                    }
-		                    
-		                    
 		                    if (genotypeCounts.size() > 1)
 		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent" ) + "\n");
-
-//		                    sb.append("\t");
-//		                    sb.append(exportedGT);
 		                    writtenGenotypeCount++;
 		                }
-		                
 	        
+		                
 		                for (String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
 		                	int nb0 = 0;
 		                	int nb1 = 0;
 		                	if (!nbAllel0.isEmpty()) {
 		                		nb0 = nbAllel0.getOrDefault(pop, 0);
-
-//		                		int nb0 = nbAllel0.get(pop);
 		                	}
 		                	sb.append(nb0);
-		                    sb.append("\t");
+		                    sb.append(" ");
 		                	if (!nbAllel1.isEmpty()) {
 		                		nb1 = nbAllel1.getOrDefault(pop, 0);
-
-//		                		int nb1 = nbAllel1.get(pop);
-			                    
 		                	}
 		                	sb.append(nb1);
-		                    sb.append("\t");
-	
-		                    
-		                    
+		                    sb.append(" ");
 		                }
 		                sb.append(LINE_SEPARATOR);
+		                
+//		                boolean allZeros = true;
+		                boolean allZeros = nbAllel0.values().stream().allMatch(value -> value == 0);
+		                if (allZeros) {
+		                	allZeros = nbAllel1.values().stream().allMatch(value -> value == 0);
+		                }
 
-		                
-		                
-		                
-		                
-		                
-		                
-		                
-		                
+		                if (!allZeros) {
+				            zos.write(sb.toString().getBytes());
+				            ligneBuilder.append(idOfVarToWrite).append(" ").append(chrom == null ? "0" : chrom).append(" ").append(pos == null ? 0 : pos).append(" ").append(StringUtils.join(variant.getKnownAlleles(), " ")).append(LINE_SEPARATOR) ;
+				    		String ligne = ligneBuilder.toString();
+				    		try {
+				    			ligneMap.put(idOfVarToWrite, ligne);
+				    		}finally {
+					            ligneBuilder.setLength(0);
+				    		}
+		                }
+		                if (initialStringBuilderCapacity.get() == 0)
+		                    initialStringBuilderCapacity.set(sb.length());
+
 //		                while (writtenGenotypeCount < individualPositions.size()) {
 //		                    sb.append(missingGenotype);
 //		                    writtenGenotypeCount++;
 //		                }
 //		                sb.append(LINE_SEPARATOR);
-		                if (initialStringBuilderCapacity.get() == 0)
-		                    initialStringBuilderCapacity.set(sb.length());
-			            zos.write(sb.toString().getBytes());
+		                
 	                }
 					catch (Exception e)
 					{
@@ -371,7 +337,10 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		
         zos.closeEntry();
         
-        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+        zos.putNextEntry(new ZipEntry(exportName + "_snp.code"));
+        StringBuilder head = new StringBuilder();
+        head.append("VariantID").append(" ").append("Chromo").append(" ").append("Position").append(" ").append("Allele1").append(" ").append("Allele2").append(LINE_SEPARATOR) ;
+		zos.write(head.toString().getBytes());
 //        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
         int nMarkerIndex = 0;
         try {
