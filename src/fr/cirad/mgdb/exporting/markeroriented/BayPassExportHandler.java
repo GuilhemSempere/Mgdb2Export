@@ -109,7 +109,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public String getExportFormatDescription() {
-        return "Exports data in BAYPASS Format. ";
+    	return "Exports zipped PED and MAP files. See <a target='_blank' href='https://forgemia.inra.fr/mathieu.gautier/baypass_public'>https://forgemia.inra.fr/mathieu.gautier/baypass_public</a> for more details";
     }
 
 	/* (non-Javadoc)
@@ -128,15 +128,13 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
     @Override
     public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		Map<String, Integer> individualPositions = new LinkedHashMap<>();
-        Map<String, String> allIndividualPops = new LinkedHashMap<>();//<individual,population>
+        Map<String, String> individualPops = new LinkedHashMap<>();
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		Query query = new Query();
-//        List<Individual> individualDataList = mongoTemplate.find(query, Individual.class);
-        for (Individual individualData : mongoTemplate.find(query, Individual.class)) {
-        	allIndividualPops.put(individualData.getId(), individualData.getPopulation());
-        }
-		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
+        for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
 			individualPositions.put(ind, individualPositions.size());
+//        String metadataFielToUseAsPop = "";
+
+        individualPops = MgdbDao.getIndividualPopulations(sModule, individualPositions.keySet());
 		
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
@@ -157,12 +155,12 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         zos.putNextEntry(new ZipEntry(exportName + ".popnames"));
        
         for (String individual : sampleIdToIndividualMap.values()) {
-			String pop = allIndividualPops.get(individual);
-			if (pop != null) {
-				SampleToIndiPops.put(individual, pop);
-                if (!samplePops.contains(pop.toString())) {
-                	samplePops.add(pop.toString());
-                }
+			String pop = individualPops.get(individual);
+			if (pop == null)
+				pop = "N/A";
+			SampleToIndiPops.put(individual, pop);
+            if (!samplePops.contains(pop.toString())) {
+            	samplePops.add(pop.toString());
             }
         }
         progress.addStep("Writing popnames file");
@@ -422,12 +420,12 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public List<String> getStepList() {
-        return Arrays.asList(new String[]{"Exporting data to HAPMAP format"});
+        return Arrays.asList(new String[]{"Exporting data to BAYPASS format"});
     }
     
 	@Override
 	public String[] getExportDataFileExtensions() {
-		return new String[] {"hapmap"};
+		return new String[] {"baypass", "popname", "_snp.code"};
 	}
 
     @Override
