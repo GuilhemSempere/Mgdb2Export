@@ -133,9 +133,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
 			individualPositions.put(ind, individualPositions.size());
 //        String metadataFielToUseAsPop = "";
-
         individualPops = MgdbDao.getIndividualPopulations(sModule, individualPositions.keySet());
-		
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
