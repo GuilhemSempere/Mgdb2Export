@@ -147,7 +147,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<Collection<String>> individuals, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, List<HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
 
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
@@ -196,7 +196,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			SAMSequenceDictionary dict = createSAMSequenceDictionary(sModule, distinctSequenceNames);
 			writer = buildVariantContextWriter(zos, dict);
 			zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-			writeGenotypeFile(sModule, nAssemblyId, individuals1, individuals2, progress, tmpVarCollName, varQuery, markerCount, markerSynonyms, annotationFieldThresholds, annotationFieldThresholds2, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, warningFileWriter, writer);
+			writeGenotypeFile(sModule, nAssemblyId, individuals, progress, tmpVarCollName, varQuery, markerCount, markerSynonyms, annotationFieldThresholds, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, warningFileWriter, writer);
 		}
 		catch (Exception e)
 		{
@@ -235,7 +235,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		}
     }
 		
-    public void writeGenotypeFile(String sModule, Integer nAssemblyId, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, FileWriter warningFileWriter, VariantContextWriter writer) throws Exception {
+    public void writeGenotypeFile(String sModule, Integer nAssemblyId, Collection<Collection<String>> individuals, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, List<HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, FileWriter warningFileWriter, VariantContextWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
 		
@@ -345,7 +345,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		    					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
             					try
             					{
-            		                vcChunks[nChunkIndex][nVariantIndex++] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), samplesToExport, individualPositions, individuals1, individuals2, phasingIDsBySample, annotationFieldThresholds, annotationFieldThresholds2, warningFileWriter, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite));
+            		                vcChunks[nChunkIndex][nVariantIndex++] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), samplesToExport, individualPositions, individuals, phasingIDsBySample, annotationFieldThresholds, warningFileWriter, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite));
             					}
             					catch (Exception e)
             					{

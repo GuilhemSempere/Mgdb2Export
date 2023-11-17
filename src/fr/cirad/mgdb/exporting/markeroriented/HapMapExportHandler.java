@@ -115,7 +115,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 	
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<Collection<String>> individuals, ProgressIndicator progress, String tmpVarCollName, Document varQuery, long markerCount, Map<String, String> markerSynonyms, List<HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		Map<String, Integer> individualPositions = new LinkedHashMap<>();
 		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
 			individualPositions.put(ind, individualPositions.size());
@@ -184,7 +184,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
 		                            String gtCode = sampleGenotype.getCode();
 		                            
-									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals1, annotationFieldThresholds, individuals2, annotationFieldThresholds2))
+									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals, annotationFieldThresholds))
 										continue;	// skip genotype
 									
 									if (individualGenotypes[individualIndex] == null)
