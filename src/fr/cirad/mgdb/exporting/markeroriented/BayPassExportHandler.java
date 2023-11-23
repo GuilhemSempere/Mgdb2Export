@@ -25,19 +25,21 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
-import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -55,21 +57,23 @@ import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
+import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.ProgressIndicator;
+import fr.cirad.tools.SetUniqueListWithConstructor;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.variant.variantcontext.VariantContext.Type;
 
 /**
- * The Class HapMapExportHandler.
+ * The Class BayPassExportHandler.
  */
-public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
+public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(HapMapExportHandler.class);
+    private static final Logger LOG = Logger.getLogger(BayPassExportHandler.class);
 
     public static final String missingGenotype = "NN";
     
@@ -81,9 +85,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
     static {
         supportedVariantTypes = new ArrayList<String>();
         supportedVariantTypes.add(Type.SNP.toString());
-        supportedVariantTypes.add(Type.MNP.toString());
-        supportedVariantTypes.add(Type.INDEL.toString());
-        supportedVariantTypes.add(Type.MIXED.toString());
         supportedVariantTypes.add(Type.NO_VARIATION.toString());
     }
 
@@ -92,7 +93,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public String getExportFormatName() {
-        return "HAPMAP";
+        return "BAYPASS";
     }
 
     /* (non-Javadoc)
@@ -100,7 +101,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public String getExportFormatDescription() {
-        return "Exports data in HapMap Format. See <a target='_blank' href='https://bitbucket.org/tasseladmin/tassel-5-source/wiki/UserManual/Load/Load'>https://bitbucket.org/tasseladmin/tassel-5-source/wiki/UserManual/Load/Load</a> for more details";
+    	return "Exports zipped BAYPASS files. See <a target='_blank' href='https://forgemia.inra.fr/mathieu.gautier/baypass_public'>https://forgemia.inra.fr/mathieu.gautier/baypass_public</a> for more details";
     }
 
 	/* (non-Javadoc)
@@ -115,14 +116,15 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	public String getExportArchiveExtension() {
 		return "zip";
 	}
-	
+	 
     @Override
     public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<String> individuals1, Collection<String> individuals2, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, HashMap<String, Float> annotationFieldThresholds, HashMap<String, Float> annotationFieldThresholds2, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, String metadataPopField, Map<String, InputStream> readyToExportFiles) throws Exception {
 		Map<String, Integer> individualPositions = new LinkedHashMap<>();
-		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-			individualPositions.put(ind, individualPositions.size());
-		
+        Map<String, String> individualPops = new LinkedHashMap<>();
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+        for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
+			individualPositions.put(ind, individualPositions.size());
+        individualPops = MgdbDao.getIndividualPopulations(sModule, individualPositions.keySet(), metadataPopField);
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
@@ -136,25 +138,43 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	        IExportHandler.writeMetadataFile(sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos);
 	    	zos.closeEntry();
         }
-
-        zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
-        String header = "rs#\talleles\tchrom\tpos\tstrand\tassembly#\tcenter\tprotLSID\tassayLSID\tpanelLSID\tQCcode";
-        zos.write(header.getBytes());
-        for (String individual : individualPositions.keySet()) {
-            zos.write("\t".getBytes());
-            zos.write(individual.getBytes());
-        }
-        zos.write((LINE_SEPARATOR).getBytes());
-
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
+        List<String> samplePops = new ArrayList<>();
+        Map<String, String> SampleToIndiPops = new LinkedHashMap<>();//<individual, population>
+        zos.putNextEntry(new ZipEntry(exportName + ".popnames"));
+       
+        for (String individual : sampleIdToIndividualMap.values()) {
+			String pop = individualPops.get(individual);
+			if (pop == null)
+				pop = ".";
+			SampleToIndiPops.put(individual, pop);
+            if (!samplePops.contains(pop.toString())) {
+            	samplePops.add(pop.toString());
+            }
+        }
+        progress.addStep("Writing popnames file");
+        progress.moveToNextStep();
+        for( String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
+        	zos.write((pop + "\n").getBytes());
+
+        }
+        zos.closeEntry();
+
+        
+        zos.putNextEntry(new ZipEntry(exportName + ".baypass"));
+        progress.addStep("Writing baypass file");
+        progress.moveToNextStep();
 		
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
+		Map<String, String> ligneMap = Collections.synchronizedMap(new LinkedHashMap());
+		StringBuilder ligneBuilder = new StringBuilder();
+
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
-			public void run() {				
+			public void run() {		
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
-                markerRunsToWrite.forEach(runsToWrite -> {
+				markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
 					if (progress.isAborted() || progress.getError() != null)
 						return;
@@ -169,12 +189,12 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                    	idOfVarToWrite = syn;
 		                }
 
-		                boolean fIsSNP = variant.getType().equals(Type.SNP.toString());
 		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
-						sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + "\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA");
-
+			            Long pos = rp == null ? null : rp.getStartSite();
+			            String chrom = rp == null ? null : (String) rp.getSequence();
+			            SetUniqueListWithConstructor<String> knownAlleles = variant.getKnownAlleles();
+						
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
-
 		                if (runsToWrite != null)
 		                	runsToWrite.forEach( run -> {
 		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
@@ -194,44 +214,74 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 									individualGenotypes[individualIndex].add(gtCode);
 		                        }
 		                    });
-
-		                int writtenGenotypeCount = 0;
 		                
-		                HashMap<String, String> genotypeStringCache = new HashMap<>();
+		        		Map<String, Integer> nbAllel0 = new LinkedHashMap<>();//<population,number>
+		        		Map<String, Integer> nbAllel1 = new LinkedHashMap<>();
+
 		                for (String individual : individualPositions.keySet() /* we use this list because it has the proper ordering */) {
 		                    int individualIndex = individualPositions.get(individual);
-		                    while (writtenGenotypeCount < individualIndex) {
-		                        sb.append(missingGenotype);
-		                        writtenGenotypeCount++;
-		                    }
 
 		                	String mostFrequentGenotype = null;
 		                    LinkedHashMap<Object, Integer> genotypeCounts = AbstractMarkerOrientedExportHandler.sortGenotypesFromMostFound(individualGenotypes[individualPositions.get(individual)]);
-                            if (genotypeCounts.size() == 1 || genotypeCounts.values().stream().limit(2).distinct().count() == 2)
-                            	mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
-
-		                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : genotypeStringCache.get(mostFrequentGenotype);
-		                    if (exportedGT == null) {
-		                    	exportedGT = StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), fIsSNP ? "" : "/");
-		                    	genotypeStringCache.put(mostFrequentGenotype, exportedGT);
+		                    if (genotypeCounts.size() == 1 || (genotypeCounts.values().stream().distinct().count() == 2)) {
+		                        mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
 		                    }
-		                    
-		                    if (genotypeCounts.size() > 1)
-		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n");
+		                    if(mostFrequentGenotype != null) {
+		                    	String population = SampleToIndiPops.get(individual);
 
-		                    sb.append("\t");
-		                    sb.append(exportedGT);
-		                    writtenGenotypeCount++;
+		                    	Pattern pattern = Pattern.compile("(\\d)/(\\d)");
+		                        Matcher matcher = pattern.matcher(mostFrequentGenotype);
+
+		                        if (matcher.find()) {
+		                        	  int gtA1 = Integer.parseInt(matcher.group(1));
+			                          int gtA2 = Integer.parseInt(matcher.group(2));
+			                          if (gtA1 == 0 && gtA2 == 0)
+			                              nbAllel0.put(population, nbAllel0.getOrDefault(population, 0) + 2);
+			                          else if (gtA1 == 0 || gtA2 == 0) {
+			                              nbAllel0.put(population, nbAllel0.getOrDefault(population, 0) + 1);
+			                              nbAllel1.put(population, nbAllel1.getOrDefault(population, 0) + 1);
+			                          } else if (gtA1 == 1 && gtA2 == 1)
+			                              nbAllel1.put(population, nbAllel1.getOrDefault(population, 0) + 2);
+		                        }
+		                    }
+		                    if (genotypeCounts.size() > 1)
+		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent" ) + "\n");
 		                }
-	
-		                while (writtenGenotypeCount < individualPositions.size()) {
-		                    sb.append(missingGenotype);
-		                    writtenGenotypeCount++;
+	        
+		                
+		                for (String pop : samplePops.stream().sorted().collect(Collectors.toList())) {
+		                	int nb0 = 0;
+		                	int nb1 = 0;
+		                	if (!nbAllel0.isEmpty()) {
+		                		nb0 = nbAllel0.getOrDefault(pop, 0);
+		                	}
+		                	sb.append(nb0);
+		                    sb.append(" ");
+		                	if (!nbAllel1.isEmpty()) {
+		                		nb1 = nbAllel1.getOrDefault(pop, 0);
+		                	}
+		                	sb.append(nb1);
+		                    sb.append(" ");
 		                }
 		                sb.append(LINE_SEPARATOR);
+		                
+		                boolean allZeros = nbAllel0.values().stream().allMatch(value -> value == 0);
+		                if (allZeros)
+		                	allZeros = nbAllel1.values().stream().allMatch(value -> value == 0);
+
+		                if (!allZeros) {
+				            zos.write(sb.toString().getBytes());
+				            ligneBuilder.append(idOfVarToWrite).append(" ").append(chrom == null ? "0" : chrom).append(" ").append(pos == null ? 0 : pos).append(" ").append(StringUtils.join(variant.getKnownAlleles(), " ")).append(LINE_SEPARATOR) ;
+				    		String ligne = ligneBuilder.toString();
+				    		try {
+				    			ligneMap.put(idOfVarToWrite, ligne);
+				    		}
+				    		finally {
+					            ligneBuilder.setLength(0);
+				    		}
+		                }
 		                if (initialStringBuilderCapacity.get() == 0)
-		                    initialStringBuilderCapacity.set(sb.length());
-			            zos.write(sb.toString().getBytes());
+		                    initialStringBuilderCapacity.set(sb.length());		                
 	                }
 					catch (Exception e)
 					{
@@ -246,8 +296,32 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
 		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
 		exportManager.readAndWrite();
+		
         zos.closeEntry();
         
+        zos.putNextEntry(new ZipEntry(exportName + "_snp.code"));
+        StringBuilder head = new StringBuilder();
+        head.append("VariantID").append(" ").append("Chromo").append(" ").append("Position").append(" ").append("Allele1").append(" ").append("Allele2").append(LINE_SEPARATOR) ;
+		zos.write(head.toString().getBytes());
+        int nMarkerIndex = 0;
+        try {
+        	progress.addStep("Writing map file");
+            progress.moveToNextStep();
+        	for (String variantId : ligneMap.keySet()) {
+        		zos.write(ligneMap.get(variantId).getBytes());
+        		progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+        	}
+        }
+        catch(Exception e) {
+        	LOG.error("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES,e);
+			progress.setError("Missing data in" + VariantRunData.FIELDNAME_KNOWN_ALLELES + ": " + e.getMessage());
+        }
+        finally {
+			
+		}
+        
+        zos.closeEntry();
+
         warningFileWriter.close();
         if (warningFile.length() > 0) {
             zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
@@ -267,6 +341,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         zos.finish();
         zos.close();
         progress.setCurrentStepProgress((short) 100);
+        
     }
 
     /* (non-Javadoc)
@@ -274,12 +349,12 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
      */
     @Override
     public List<String> getStepList() {
-        return Arrays.asList(new String[]{"Exporting data to HAPMAP format"});
+        return Arrays.asList(new String[]{"Exporting data to BAYPASS format"});
     }
     
 	@Override
 	public String[] getExportDataFileExtensions() {
-		return new String[] {"hapmap"};
+		return new String[] {"baypass", "popname", "_snp.code"};
 	}
 
     @Override
