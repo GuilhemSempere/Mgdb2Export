@@ -150,7 +150,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 	 * @see fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.List, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, int, int, java.util.Map)
      */
     @Override
-	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, Collection<Collection<String>> individuals, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, List<HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, String metadataPopField, Map<String, InputStream> readyToExportFiles) throws Exception {
+	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
         File warningFile = File.createTempFile("export_warnings_", "");
         FileWriter warningFileWriter = new FileWriter(warningFile);
         File snpFile = null;
@@ -284,7 +284,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
             progress.addStep("Generating .ind file");
             progress.moveToNextStep();
             StringBuilder indFileContents = new StringBuilder(individualPositions.size() * 10);
-            Map<String, String> individualPops = MgdbDao.getIndividualPopulations(sModule, individualPositions.keySet(), metadataPopField);
+            Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individuals, true);
             for (String individual : individualPositions.keySet()) {
             	String pop = individualPops.get(individual);
                 indFileContents.append(individual).append("\t").append(getIndividualGenderCode(sModule, individual)).append("\t").append((pop == null ? "." : pop)).append(LINE_SEPARATOR);

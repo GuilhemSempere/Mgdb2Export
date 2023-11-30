@@ -110,7 +110,7 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, File[] individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, String metadataPopField, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, File[] individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
         File warningFile = File.createTempFile("export_warnings_", "");
@@ -136,7 +136,7 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
 
         zos.putNextEntry(new ZipEntry(exportName + ".ped"));
-        writeGenotypeFile(zos, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, individualExportFiles, metadataPopField, warningFileWriter, progress);
+        writeGenotypeFile(zos, sModule, exportedIndividuals, individualPopulations, nQueryChunkSize, markerSynonyms, individualExportFiles, warningFileWriter, progress);
     	zos.closeEntry();
 
         zos.putNextEntry(new ZipEntry(exportName + ".map"));
@@ -191,14 +191,13 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         progress.setCurrentStepProgress((short) 100);
     }
     
-    public void writeGenotypeFile(OutputStream os, String sModule, Collection<String> individualsToExport, int nQueryChunkSize, Map<String, String> markerSynonyms, File[] individualExportFiles, String metadataPopField, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
+    public void writeGenotypeFile(OutputStream os, String sModule, Collection<String> individualsToExport, Map<String, String> individualPops, int nQueryChunkSize, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
         short nProgress = 0, nPreviousProgress = 0;
         
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());	// use multiple threads so we can prepare several lines at once
         HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
         final ArrayList<Thread> threadsToWaitFor = new ArrayList<>(nNConcurrentThreads);
         final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();        
-        final Map<String, String> individualPops = MgdbDao.getIndividualPopulations(sModule, individualsToExport, metadataPopField);
 
         try
         {
