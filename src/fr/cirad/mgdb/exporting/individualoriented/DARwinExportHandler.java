@@ -154,7 +154,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
             try (Scanner scanner = new Scanner(indFile)) {
                 exportedIndividuals.add(scanner.nextLine());
             }
-        LinkedHashMap<String, Individual> indMap = MgdbDao.getInstance().loadIndividualsWithAllMetadata(sModule, sExportingUser, null, exportedIndividuals);
+        LinkedHashMap<String, Individual> indMap = MgdbDao.getInstance().loadIndividualsWithAllMetadata(sModule, sExportingUser, null, exportedIndividuals, null);
         ArrayList<String> distinctAlleles = new ArrayList<String>();    // the index of each allele will be used as its code
         String[] donFileContents = new String[indMap.size()];
 
