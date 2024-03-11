@@ -131,12 +131,9 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualPositions.size() + "individuals";
 
-        if (individualMetadataFieldsToExport != null && !individualMetadataFieldsToExport.isEmpty()) {
-        	zos.putNextEntry(new ZipEntry(sModule + (assembly != null ? "__" + assembly.getName() : "") + "__" + individualPositions.size()+ "individuals_metadata.tsv"));
-        	zos.write("individual".getBytes());
-	        IExportHandler.writeMetadataFile(sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos);
-	    	zos.closeEntry();
-        }
+        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+        	IExportHandler.addMetadataEntryIfAny(sModule + (assembly != null ? "__" + assembly.getName() : "") + "__" + individualPositions.size()+ "individuals_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, "individual");
+        
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
         List<String> samplePops = new ArrayList<>();
         Map<String, String> SampleToIndiPops = new LinkedHashMap<>();//<individual, population>

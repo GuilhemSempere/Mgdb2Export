@@ -161,12 +161,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
 		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
         
-        if (individualMetadataFieldsToExport != null && !individualMetadataFieldsToExport.isEmpty()) {
-        	zos.putNextEntry(new ZipEntry(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv"));
-        	zos.write("individual".getBytes());
-	        IExportHandler.writeMetadataFile(sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos);
-	    	zos.closeEntry();
-        }
+        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, "individual");
         
         String refPosPathWithTrailingDot = Assembly.getVariantRefPosPath(nAssemblyId) + ".";
         

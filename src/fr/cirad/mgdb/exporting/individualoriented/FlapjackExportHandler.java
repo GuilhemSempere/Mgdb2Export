@@ -103,16 +103,13 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
         MongoCollection<Document> varColl = mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class));
 
-        if (individualMetadataFieldsToExport != null && !individualMetadataFieldsToExport.isEmpty()) {
-            zos.putNextEntry(new ZipEntry(exportName + ".phenotype"));
-            zos.write(("# fjFile = PHENOTYPE" + LINE_SEPARATOR).getBytes());
-            ArrayList<String> exportedIndividuals = new ArrayList<>();
-            for (File indFile : individualExportFiles)
-                try (Scanner scanner = new Scanner(indFile)) {
-                    exportedIndividuals.add(scanner.nextLine());
-                }
-            IExportHandler.writeMetadataFile(sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos);
-            zos.closeEntry();
+        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
+        	ArrayList<String> exportedIndividuals = new ArrayList<>();
+	        for (File indFile : individualExportFiles)
+	        try (Scanner scanner = new Scanner(indFile)) {
+	        	exportedIndividuals.add(scanner.nextLine());
+	        }
+        	IExportHandler.addMetadataEntryIfAny(exportName + ".phenotype", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "# fjFile = PHENOTYPE" + LINE_SEPARATOR);
         }
         
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();

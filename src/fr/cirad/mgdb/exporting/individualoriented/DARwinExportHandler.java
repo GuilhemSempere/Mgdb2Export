@@ -26,13 +26,11 @@ import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
-import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
@@ -157,6 +155,8 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         LinkedHashMap<String, Individual> indMap = MgdbDao.getInstance().loadIndividualsWithAllMetadata(sModule, sExportingUser, null, exportedIndividuals, null);
         ArrayList<String> distinctAlleles = new ArrayList<String>();    // the index of each allele will be used as its code
         String[] donFileContents = new String[indMap.size()];
+        
+        final Collection<String> finalMdFieldsToExport = individualMetadataFieldsToExport != null ? individualMetadataFieldsToExport : indMap.values().stream().flatMap(individual -> individual.getAdditionalInfo().keySet().stream()).collect(Collectors.toSet());
 
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());    // use multiple threads so we can prepare several lines at once
         HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
@@ -193,7 +193,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                             
                             StringBuilder donFileLineSB = new StringBuilder();
                             donFileLineSB.append(count).append("\t").append(individualId);
-                            for (String header : individualMetadataFieldsToExport)
+                            for (String header : finalMdFieldsToExport)
                                 donFileLineSB.append("\t").append(Helper.nullToEmptyString(indMap.get(individualId).getAdditionalInfo().get(header)));
                             donFileLineSB.append(LINE_SEPARATOR);
                             donFileContents[count - 1] = donFileLineSB.toString();
@@ -269,8 +269,8 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         os.closeEntry();
 
         os.putNextEntry(new ZipEntry(exportName + ".don"));
-        String donFileHeader = "@DARwin 5.0 - DON -" + LINE_SEPARATOR + individualExportFiles.length + "\t" + (1 + individualMetadataFieldsToExport.size()) + LINE_SEPARATOR + "N°" + "\t" + "individual";
-        for (String header : individualMetadataFieldsToExport)
+        String donFileHeader = "@DARwin 5.0 - DON -" + LINE_SEPARATOR + individualExportFiles.length + "\t" + (1 + finalMdFieldsToExport.size()) + LINE_SEPARATOR + "N°" + "\t" + "individual";
+        for (String header : finalMdFieldsToExport)
             donFileHeader += "\t" + header;
         os.write((donFileHeader + LINE_SEPARATOR).getBytes());
         for (String donIndLine : donFileContents)

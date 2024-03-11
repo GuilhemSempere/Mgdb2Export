@@ -125,13 +125,9 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         		exportedIndividuals.add(scanner.nextLine());
         	}
 
-        if (individualMetadataFieldsToExport != null && !individualMetadataFieldsToExport.isEmpty()) {
-        	zos.putNextEntry(new ZipEntry(sModule + "__" + individualExportFiles.length + "individuals_metadata.tsv"));
-        	zos.write("individual".getBytes());
-	        IExportHandler.writeMetadataFile(sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos);
-	    	zos.closeEntry();
-        }
-        
+        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualExportFiles.length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
+
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
 
