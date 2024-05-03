@@ -205,7 +205,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
         short nProgress = 0, nPreviousProgress = 0;
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());   // use multiple threads so we can prepare several lines at once
-        HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
+        StringBuilder[] individualLines = new StringBuilder[nNConcurrentThreads];
 
         final ArrayList<Thread> threadsToWaitFor = new ArrayList<>(nNConcurrentThreads);
         final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
@@ -221,11 +221,12 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                 Thread thread = new Thread() {
                     @Override
                     public void run() {
-                        StringBuilder indLine = individualLines.get(nThreadIndex);
+                        StringBuilder indLine = individualLines[nThreadIndex];
                         if (indLine == null) {
                             indLine = new StringBuilder((int) f.length() / 3 /* rough estimation */);
-                            individualLines.put(nThreadIndex, indLine);
+                            individualLines[nThreadIndex] = indLine;
                         }
+
                         BufferedReader in = null;
                         try {
                             in = new BufferedReader(new FileReader(f));
@@ -278,12 +279,12 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                         t.join();
                     
                     for (int j=0; j<nNConcurrentThreads && nWrittenIndividualCount++ < individualExportFiles.length; j++) {
-                        StringBuilder indLine = individualLines.get(j);
+                        StringBuilder indLine = individualLines[j];
                         if (indLine == null || indLine.length() == 0)
                             LOG.warn("No line to export for individual " + j);
                         else {
                             os.write(indLine.toString().getBytes());
-                            individualLines.put(j, new StringBuilder(initialStringBuilderCapacity.get()));
+                            individualLines[j] = new StringBuilder(initialStringBuilderCapacity.get());
                         }
                     }
 
