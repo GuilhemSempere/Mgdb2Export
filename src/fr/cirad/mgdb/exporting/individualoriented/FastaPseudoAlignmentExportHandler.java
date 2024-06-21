@@ -86,7 +86,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zipped FASTA file containing a pseudo-alignment consisting in the concatenation of SNP alleles, compatible with tree construction tools like FastTree. An additional PLINK-style map file is added for reference.";
+    	return "Exports a zipped FASTA file containing a pseudo-alignment consisting in the concatenation of SNP alleles, compatible with tree construction tools like FastTree, ClearCut or RapidNJ. An additional PLINK-style map file is added for reference.";
     }
 
 	/* (non-Javadoc)
@@ -283,7 +283,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
     }
 
     protected String getMissingAlleleString() {
-		return "N";
+		return "-";
 	}
     
     protected String getLinePrefix() {
