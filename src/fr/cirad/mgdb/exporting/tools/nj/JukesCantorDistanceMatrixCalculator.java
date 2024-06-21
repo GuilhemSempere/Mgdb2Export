@@ -1,4 +1,4 @@
-package fr.cirad.mgdb.exporint.tools.nj;
+package fr.cirad.mgdb.exporting.tools.nj;
 
 import java.util.List;
 import java.util.concurrent.RecursiveTask;
