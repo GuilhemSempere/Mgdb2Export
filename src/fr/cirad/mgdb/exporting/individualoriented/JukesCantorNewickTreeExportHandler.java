@@ -43,8 +43,8 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.traviswheeler.ninja.TreeBuilderBinHeap;
 import com.traviswheeler.ninja.TreeNode;
 
-import fr.cirad.mgdb.exporint.tools.nj.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.exporting.tools.nj.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.tools.ExperimentalFeature;
 import fr.cirad.tools.ProgressIndicator;
