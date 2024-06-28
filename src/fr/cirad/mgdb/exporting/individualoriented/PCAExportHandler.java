@@ -112,12 +112,11 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
 
 	    // Check if there is enough memory
-		System.gc();
+//		System.gc();
 	    Runtime runtime = Runtime.getRuntime();
-	    long matrixSize = markerCount * sortedIndividuals.size(), availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-//	    LOG.info(matrixSize + " -> " + (float) matrixSize / availableRAM);
-	    if (matrixSize * 3 > availableRAM * 0.01)	// Empirically, we found that if matrix sizer is < 1% of the available memory, SVD calculation is possible. But we account for concurrency by making sure we have at least 3x more RAM available
-	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
+//	    long matrixSize = markerCount * sortedIndividuals.size(), availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+//	    if (matrixSize * 3 > availableRAM * 0.01)	// Empirically, we found that if matrix sizer is < 1% of the available memory, SVD calculation is possible. But we account for concurrency by making sure we have at least 3x more RAM available
+//	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         File warningFile = File.createTempFile("export_warnings_", "");
@@ -164,28 +163,34 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
             return;
 
         try {
+        	long availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+    	    System.err.println("availableRAM before -> " + availableRAM/1024);
             progress.moveToNextStep();
             ParallelPCACalculator pcaCalc = new ParallelPCACalculator();            
             double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(eigenstratGenoOS.toString(), Arrays.stream(snpWriter.toString().split("\n")).map(line -> line.split("\t")[0]).toList(), warningFileWriter);
-            
+            eigenstratGenoOS = null;
+
 	        if (progress.isAborted())
 	            return;
 	        
             progress.moveToNextStep();
-	        double[][] imputedData = pcaCalc.imputeMissingValues(data);
+            data = pcaCalc.imputeMissingValues(data);
 	        if (progress.isAborted())
 	            return;
 	        
             progress.moveToNextStep();
-	        double[][] centeredData = pcaCalc.centerAndScaleData(imputedData);
+            data = pcaCalc.centerAndScaleData(data);
 	        if (progress.isAborted())
 	            return;
 	        
 	        progress.moveToNextStep();
-	        ParallelPCACalculator.PCAResult pcaResult = pcaCalc.performPCA(centeredData);
+	        ParallelPCACalculator.PCAResult pcaResult = pcaCalc.performPCA(data);
 	        DoubleMatrix2D eigenVectors = pcaResult.getEigenVectors();
-	        double[][] dataMatrix = pcaCalc.transformData(centeredData, eigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
+	        double[][] dataMatrix = pcaCalc.transformData(data, eigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
 	        double[] eigenValues = pcaResult.getEigenValues();
+	        
+	        availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+		    System.out.println("availableRAM after -> " + availableRAM/1024);
 
 			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + dataMatrix[0].length + "variants__" + sortedIndividuals.size() + "individuals";
 	        zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
