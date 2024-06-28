@@ -196,6 +196,8 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
             }
 
             double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
+        	if (progress.getError() != null || progress.isAborted())
+        		return;
             
             progress.moveToNextStep();
             
