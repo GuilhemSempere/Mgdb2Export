@@ -19,7 +19,7 @@ public class JukesCantorDistanceMatrixCalculator {
     static public double[][] calculateDistanceMatrix(List<String> sequences, ProgressIndicator progress) {
         int n = sequences.size();
         double[][] distanceMatrix = new double[n][n];
-        int nProcessCount = Math.max(1, (int) Math.ceil(Runtime.getRuntime().availableProcessors() / 2));
+        int nProcessCount = Math.max(1, (int) Math.ceil(Runtime.getRuntime().availableProcessors() / 3));
         LOG.info("Launching calculateDistanceMatrix on " + nProcessCount + " thread(s)");
         ForkJoinPool pool = new ForkJoinPool(nProcessCount);
 
@@ -27,7 +27,9 @@ public class JukesCantorDistanceMatrixCalculator {
         completedTasks.set(0); // Reset the counter
 
         DistanceCalculatorTask task = new DistanceCalculatorTask(sequences, distanceMatrix, 0, n, progress);
-        double maxDistance = pool.invoke(task);
+        Double maxDistance = pool.invoke(task);
+    	if (progress.getError() != null || progress.isAborted())
+    		return null;
 
         // fixed undefined distances
         for (int i = 0; i < distanceMatrix.length; i++) {
@@ -110,9 +112,10 @@ public class JukesCantorDistanceMatrixCalculator {
                             if (distance > maxDistance) {
                                 maxDistance = distance;
                             }
-
                             progress.setCurrentStepProgress((int) ((completedTasks.getAndIncrement() / (double) totalTasks) * 100));
                         }
+                    	if (progress.getError() != null || progress.isAborted())
+                    		return null;
                     }
                 }
                 return maxDistance;
@@ -121,6 +124,9 @@ public class JukesCantorDistanceMatrixCalculator {
                 DistanceCalculatorTask task1 = new DistanceCalculatorTask(sequences, distanceMatrix, start, mid, progress);
                 DistanceCalculatorTask task2 = new DistanceCalculatorTask(sequences, distanceMatrix, mid, end, progress);
                 invokeAll(task1, task2);
+
+            	if (progress.getError() != null || progress.isAborted())
+            		return null;
                 return Math.max(task1.join(), task2.join());
             }
         }
