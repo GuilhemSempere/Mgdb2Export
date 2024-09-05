@@ -207,7 +207,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		                    String exportedGT = mostFrequentGenotype == null ? missingGenotype : genotypeStringCache.get(mostFrequentGenotype);
 		                    if (exportedGT == null) {
-		                    	exportedGT = StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), fIsSNP ? "" : "/");
+		                    	exportedGT = StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate).stream().map(all -> "N".equals(all) ? "D" : ("NN".equals(all) ? "I" : all)).toList(), fIsSNP ? "" : "/");
 		                    	genotypeStringCache.put(mostFrequentGenotype, exportedGT);
 		                    }
 		                    

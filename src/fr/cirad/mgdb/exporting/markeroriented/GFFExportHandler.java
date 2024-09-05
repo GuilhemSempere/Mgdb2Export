@@ -194,7 +194,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
                             if (genotypeCounts.size() == 1 || genotypeCounts.values().stream().limit(2).distinct().count() == 2)
                             	mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
 
-		                    String exportedGT = mostFrequentGenotype == null ? "." : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), "/");
+		                    String exportedGT = mostFrequentGenotype == null ? "." : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate).stream().map(all -> "N".equals(all) ? "D" : ("NN".equals(all) ? "I" : all)).toList(), "/");
 
 		                    if (genotypeCounts.size() > 1)
 		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n");
