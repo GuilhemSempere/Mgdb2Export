@@ -19,7 +19,6 @@ package fr.cirad.mgdb.exporting.markeroriented;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -122,8 +121,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 			individualPositions.put(ind, individualPositions.size());
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
@@ -147,7 +144,8 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
-			public void run() {				
+			@Override
+			public void writeChunkRunsSynchronously(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {				
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
                 markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -212,13 +210,13 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                    }
 		                    
 		                    if (genotypeCounts.size() > 1)
-		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n");
+		                    	warningOS.write(("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n").getBytes());
 
 		                    sb.append("\t");
 		                    sb.append(exportedGT);
 		                    writtenGenotypeCount++;
 		                }
-	
+		                
 		                while (writtenGenotypeCount < individualPositions.size()) {
 		                    sb.append(missingGenotype);
 		                    writtenGenotypeCount++;
@@ -226,7 +224,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                sb.append(LINE_SEPARATOR);
 		                if (initialStringBuilderCapacity.get() == 0)
 		                    initialStringBuilderCapacity.set(sb.length());
-			            zos.write(sb.toString().getBytes());
+			            mainOS.write(sb.toString().getBytes());
 	                }
 					catch (Exception e)
 					{
@@ -236,28 +234,37 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 					}
 				});
 			}
+
+			@Override
+			public void run() {
+				writeChunkRunsSynchronously(m_markerRunsToWrite, m_orderedMarkerIDs, m_mainOS, m_warningOS);				
+			}
 		};
 
 		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
-		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
-		exportManager.readAndWrite();
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		File[] warningFiles = exportManager.readAndWrite(zos);
         zos.closeEntry();
         
-        warningFileWriter.close();
-        if (warningFile.length() > 0) {
-            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-            int nWarningCount = 0;
-            BufferedReader in = new BufferedReader(new FileReader(warningFile));
-            String sLine;
-            while ((sLine = in.readLine()) != null) {
-                zos.write((sLine + "\n").getBytes());
-                nWarningCount++;
-            }
-            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-            in.close();
-            zos.closeEntry();
+        int nWarningCount = 0;
+        for (File f : warningFiles) {
+	    	if (f.length() > 0) {
+	            BufferedReader in = new BufferedReader(new FileReader(f));
+	            String sLine;
+	            while ((sLine = in.readLine()) != null) {
+	            	if (nWarningCount == 0)
+	                    zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+	                zos.write((sLine + "\n").getBytes());
+	                nWarningCount++;
+	            }
+	            in.close();
+	    	}
+	    	f.delete();
         }
-        warningFile.delete();
+        if (nWarningCount > 0) {
+	        LOG.info("Number of warnings for export (" + exportName + "): " + nWarningCount);
+	        zos.closeEntry();
+        }
 
         zos.finish();
         zos.close();
