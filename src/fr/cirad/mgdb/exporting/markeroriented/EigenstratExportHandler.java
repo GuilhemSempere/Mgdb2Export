@@ -44,7 +44,6 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.mongodb.BasicDBList;
 import com.mongodb.client.MongoCollection;
 
-import fr.cirad.mgdb.exporting.AbstractExportWritingThread;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
@@ -151,8 +150,6 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
      */
     @Override
 	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-        File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
         File snpFile = null;
 
         try {
@@ -180,10 +177,10 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
     	    final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
     		
-    		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
-    			public void run() {
+    		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
+    			@Override
+    			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {		
     				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
-//    				final Iterator<String> exportedVariantIterator = orderedMarkerIDs != null ? orderedMarkerIDs.iterator() : markerRunsToWrite.;
     				markerRunsToWrite.forEach(runsToWrite -> {
                     	String idOfVarToWrite = exportedVariantIterator.next();
     					if (progress.isAborted() || progress.getError() != null)
@@ -244,12 +241,12 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
                                 }
 
                                 if (genotypeCounts.size() > 1)
-                                	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + nOutputCode) + "\n");
+                                	warningOS.write(("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + nOutputCode) + "\n").getBytes());
                                 if (nAlleleCount > 2)
-                                    warningFileWriter.write("- More than 2 alleles found for variant " + idOfVarToWrite + ", individual " + individual + ". Exporting only the first 2 alleles.\n");
+                                	warningOS.write(("- More than 2 alleles found for variant " + idOfVarToWrite + ", individual " + individual + ". Exporting only the first 2 alleles.\n").getBytes());
 
                                 if (fFirstLoopExecution && variant.getKnownAlleles().size() > 2)
-                                    warningFileWriter.write("- Variant " + variant.getVariantId() + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n");
+                                	warningOS.write(("- Variant " + variant.getVariantId() + " is multi-allelic. Make sure Eigenstrat genotype encoding specifications are suitable for you.\n").getBytes());
 
                                 sb.append(nOutputCode);        
                                 fFirstLoopExecution = false;
@@ -270,8 +267,8 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     		};
 
     		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
-    		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
-    		exportManager.readAndWrite();
+    		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+    		File[] warningFiles = exportManager.readAndWrite(zos);
             zos.closeEntry();            
             
             if (unassignedMarkers.size() > 0)
@@ -300,20 +297,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
             in.close();
             zos.closeEntry();
 
-            warningFileWriter.close();
-            if (warningFile.length() > 0) {
-                zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-                int nWarningCount = 0;
-                in = new BufferedReader(new FileReader(warningFile));
-                while ((sLine = in.readLine()) != null) {
-                    zos.write((sLine + "\n").getBytes());
-                    nWarningCount++;
-                }
-                LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-                in.close();
-                zos.closeEntry();
-            }
-            warningFile.delete();
+            IExportHandler.writeWarnings(zos, warningFiles, exportName);
 
             zos.finish();
             zos.close();

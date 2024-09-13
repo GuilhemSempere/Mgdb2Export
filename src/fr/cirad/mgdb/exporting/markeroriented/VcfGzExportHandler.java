@@ -61,7 +61,7 @@ public class VcfGzExportHandler extends VcfExportHandler {
 	}
 	
 	@Override
-	protected VariantContextWriter buildVariantContextWriter(OutputStream os, SAMSequenceDictionary dict) {
+	protected CustomVCFWriter buildVariantContextWriter(OutputStream os, SAMSequenceDictionary dict) {
 		return new CustomVCFWriter(null, new BlockCompressedOutputStream(os, (File) null, Deflater.BEST_COMPRESSION, new DeflaterFactory()), dict, false, false, true);
 	}
 

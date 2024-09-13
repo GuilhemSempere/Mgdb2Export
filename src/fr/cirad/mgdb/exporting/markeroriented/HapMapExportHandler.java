@@ -19,6 +19,7 @@ package fr.cirad.mgdb.exporting.markeroriented;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -143,9 +144,9 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
-		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
+		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRunsSynchronously(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {				
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {				
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
                 markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -234,11 +235,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 					}
 				});
 			}
-
-			@Override
-			public void run() {
-				writeChunkRunsSynchronously(m_markerRunsToWrite, m_orderedMarkerIDs, m_mainOS, m_warningOS);				
-			}
 		};
 
 		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
@@ -246,32 +242,14 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		File[] warningFiles = exportManager.readAndWrite(zos);
         zos.closeEntry();
         
-        int nWarningCount = 0;
-        for (File f : warningFiles) {
-	    	if (f.length() > 0) {
-	            BufferedReader in = new BufferedReader(new FileReader(f));
-	            String sLine;
-	            while ((sLine = in.readLine()) != null) {
-	            	if (nWarningCount == 0)
-	                    zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-	                zos.write((sLine + "\n").getBytes());
-	                nWarningCount++;
-	            }
-	            in.close();
-	    	}
-	    	f.delete();
-        }
-        if (nWarningCount > 0) {
-	        LOG.info("Number of warnings for export (" + exportName + "): " + nWarningCount);
-	        zos.closeEntry();
-        }
+        IExportHandler.writeWarnings(zos, warningFiles, exportName);
 
         zos.finish();
         zos.close();
         progress.setCurrentStepProgress((short) 100);
     }
 
-    /* (non-Javadoc)
+	/* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getStepList()
      */
     @Override

@@ -72,6 +72,10 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
     public void writeHeader(VCFHeader header) {
         mHeader = writeHeader(header, ((Writer) (mWriter)), doNotWriteGenotypes, getVersionLine(), getStreamName());
     }
+    
+    public void accountForHeaderWithoutWritingIt(VCFHeader header) {
+        mHeader = writeHeader(header, new StringWriter(), doNotWriteGenotypes, getVersionLine(), getStreamName());
+    }
 
     /**
      * Gets the version line.
@@ -673,6 +677,4 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
 	public void setHeader(VCFHeader header) {
 		this.mHeader = header;
 	}
-	
-	
 }
