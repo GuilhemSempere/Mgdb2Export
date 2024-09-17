@@ -16,10 +16,7 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.markeroriented;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -119,14 +116,12 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
         typeToOntology.put(Type.MNP.toString(), "SO:0001059");
 
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
-		
-        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 		
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {	
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) {	
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				for (Collection<VariantRunData> runsToWrite : markerRunsToWrite) {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -216,13 +211,11 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		
 		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
 		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
-		File[] warningFiles = exportManager.readAndWrite(zos);	
+		exportManager.readAndWrite(zos);	
         zos.closeEntry();
-        
-        if (unassignedMarkers.size() > 0)
-        	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
 
-        IExportHandler.writeWarnings(zos, warningFiles, exportName);
+		File[] warningFiles = exportManager.getWarningFiles();
+        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
 
         zos.finish();
         zos.close();

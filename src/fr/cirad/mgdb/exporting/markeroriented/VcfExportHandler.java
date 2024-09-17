@@ -196,7 +196,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			File[] warningFiles = writeGenotypeFile(sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, writer);
 
 			zos.closeEntry();
-			IExportHandler.writeWarnings(zos, warningFiles, exportName);
+			IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
 		}
 		catch (Exception e) {
 			LOG.error("Error exporting", e);
@@ -298,11 +298,11 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		HashMap<Integer, Object /*phID*/> phasingIDsBySample = new HashMap<>();
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) throws IOException {
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {
 				if (markerRunsToWrite.isEmpty())
 					return;
 				
-				CustomVCFWriter chunkWriter = new CustomVCFWriter(null, mainOS, null, false, false, true);
+				CustomVCFWriter chunkWriter = new CustomVCFWriter(null, genotypeOS, null, false, false, true);
 				chunkWriter.accountForHeaderWithoutWritingIt(header);
 
 			    ArrayList<ArrayList<Collection<VariantRunData>>> splitVrdColls = Helper.evenlySplitCollection(markerRunsToWrite, Runtime.getRuntime().availableProcessors() - 1);
@@ -359,7 +359,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName);
 		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
-		return exportManager.readAndWrite(writer.getOutputStream());
+		return exportManager.getWarningFiles();
 	}
 
     @Override

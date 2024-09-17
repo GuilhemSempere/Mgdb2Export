@@ -145,7 +145,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream mainOS, OutputStream warningOS) {				
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) {				
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
                 markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -224,7 +224,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                sb.append(LINE_SEPARATOR);
 		                if (initialStringBuilderCapacity.get() == 0)
 		                    initialStringBuilderCapacity.set(sb.length());
-			            mainOS.write(sb.toString().getBytes());
+			            genotypeOS.write(sb.toString().getBytes());
 	                }
 					catch (Exception e)
 					{
@@ -238,10 +238,11 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
 		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
-		File[] warningFiles = exportManager.readAndWrite(zos);
+		exportManager.readAndWrite(zos);
         zos.closeEntry();
         
-        IExportHandler.writeWarnings(zos, warningFiles, exportName);
+		File[] warningFiles = exportManager.getWarningFiles();
+        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
 
         zos.finish();
         zos.close();
