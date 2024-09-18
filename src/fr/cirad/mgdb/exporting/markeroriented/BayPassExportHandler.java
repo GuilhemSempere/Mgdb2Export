@@ -17,6 +17,7 @@
 package fr.cirad.mgdb.exporting.markeroriented;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -159,7 +160,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) {		
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {		
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -274,10 +275,10 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		exportManager.readAndWrite(zos);
         zos.closeEntry();
 
-		File[] snpFiles = exportManager.getVariantFiles();
+		File[] snpFiles = exportManager.getOutputs().getVariantFiles();
         IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + "_snp.code");
 
-		File[] warningFiles = exportManager.getWarningFiles();
+		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
         IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
         
         zos.finish();

@@ -360,7 +360,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName);
 		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		exportManager.readAndWrite(writer.getOutputStream());
-		return exportManager.getWarningFiles();
+		return exportManager.getOutputs().getWarningFiles();
 	}
 
     @Override

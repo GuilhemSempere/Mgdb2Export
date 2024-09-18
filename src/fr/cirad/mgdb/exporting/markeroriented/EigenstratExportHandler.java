@@ -17,6 +17,7 @@
 package fr.cirad.mgdb.exporting.markeroriented;
 
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -170,7 +171,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 		
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) {		
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {		
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -245,7 +246,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 	                    sb.append(LINE_SEPARATOR);
                         if (initialStringBuilderCapacity.get() == 0)
                             initialStringBuilderCapacity.set(sb.length());
-        				zos.write(sb.toString().getBytes());
+                        genotypeOS.write(sb.toString().getBytes());
 	                }
 					catch (Exception e)
 					{
@@ -278,10 +279,10 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
         zos.write(indFileContents.toString().getBytes());
         zos.closeEntry();
         
-		File[] snpFiles = exportManager.getVariantFiles();
+		File[] snpFiles = exportManager.getOutputs().getVariantFiles();
         IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + ".snp");
 
-		File[] warningFiles = exportManager.getWarningFiles();
+		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
         IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
 
         zos.finish();
