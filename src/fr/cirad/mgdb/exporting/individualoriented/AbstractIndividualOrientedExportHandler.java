@@ -43,7 +43,6 @@ import org.apache.log4j.Logger;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.type.filter.AssignableTypeFilter;
-import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
@@ -132,15 +131,18 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
 		PipedOutputStream pos = new PipedOutputStream();
 		AtomicReference<ExportOutputs> exportOutputs = new AtomicReference<>();
+		
+		Integer nAssemblyID= Assembly.getThreadBoundAssembly();
 
 		// Run data reading in a thread so that we can immediately wait for the streamed output (avoids the need for a global temporary file)
 		new Thread(() -> {
+			Assembly.setThreadAssembly(nAssemblyID);
 		    try (pos) {
 		        progress.addStep("Extracting genotypes");
 		        progress.moveToNextStep();
 
 		        HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, vrdQuery, markerCount, null, samplesToExport));
+		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyID)), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, vrdQuery, markerCount, null, samplesToExport));
 		    } catch (Exception e) {
 		        LOG.error("Error reading genotypes for export", e);
 		        progress.setError(e.getMessage());
@@ -156,7 +158,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	    	Integer[] indPos = individualPositions.values().toArray(new Integer[individualPositions.size()]);
 	        while ((line = reader.readLine()) != null) {
 	        	if (nLinesProcessed++ == -1)
-	        		continue;
+	        		continue;	// skip header
 
 	        	String[] splitLine = line.split("\t", -1);
 
