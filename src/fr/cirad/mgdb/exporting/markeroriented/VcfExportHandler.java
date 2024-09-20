@@ -350,7 +350,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		        for (VariantContext[] vcChunk : vcChunks)
 		            for (VariantContext vc : vcChunk)
 		            	chunkWriter.add(vc);
-//	                    mainOS.write(finalVariantContextWriter.buildVariantContextLine(vc).getBytes());
 		        chunkWriter.close();
 			}
 		};
@@ -359,6 +358,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName);
 		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		if (tmpFolderPath != null)
+			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(writer.getOutputStream());
 		return exportManager.getOutputs().getWarningFiles();
 	}

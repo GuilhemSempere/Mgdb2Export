@@ -53,6 +53,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.tools.AlphaNumericComparator;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -273,6 +274,8 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
 		ExportManager exportManager = new ExportManager(sModule, assembly == null ? null : assembly.getId(), mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, exportWriter, markerCount, progress);
+		if (tmpFolderPath != null)
+			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + "all_users" + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(os);
 		return exportManager.getOutputs();
     }
