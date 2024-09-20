@@ -26,7 +26,6 @@ import htsjdk.samtools.SAMSequenceDictionary;
 import htsjdk.samtools.util.BlockCompressedOutputStream;
 import htsjdk.samtools.util.zip.DeflaterFactory;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
-import htsjdk.variant.variantcontext.writer.VariantContextWriter;
 
 /**
  * The Class VcfExportHandler.
