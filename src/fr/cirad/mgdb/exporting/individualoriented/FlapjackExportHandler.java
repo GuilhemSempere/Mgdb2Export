@@ -93,17 +93,18 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
     @Override
     public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+        // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
         FileOutputStream warningOS = new FileOutputStream(warningFile);
         for (File f : exportOutputs.getWarningFiles()) {
-	    	if (f.length() > 0) {
+	    	if (f != null && f.length() > 0) {
 	            BufferedReader in = new BufferedReader(new FileReader(f));
 	            String sLine;
 	            while ((sLine = in.readLine()) != null)
 	            	warningOS.write((sLine + "\n").getBytes());
 	            in.close();
+		    	f.delete();
 	    	}
-	    	f.delete();
         }
 
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);

@@ -162,7 +162,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         String refPosPathWithTrailingDot = Assembly.getVariantRefPosPath(nAssemblyId) + ".";
         
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
         
         CustomVCFWriter writer = null;		
 		try {
@@ -193,7 +192,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			SAMSequenceDictionary dict = createSAMSequenceDictionary(sModule, distinctSequenceNames);
 			writer = buildVariantContextWriter(zos, dict);
 			zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-			File[] warningFiles = writeGenotypeFile(sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, writer);
+			File[] warningFiles = writeGenotypeFile(sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, writer);
 			zos.closeEntry();
 
 			IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
@@ -214,7 +213,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		}
     }
 		
-    public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList vrdQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
+    public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
 		
@@ -357,7 +356,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName);
-		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQuery, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(writer.getOutputStream());

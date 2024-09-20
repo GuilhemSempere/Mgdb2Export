@@ -271,8 +271,8 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 			}
 		};
 
-		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
-		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(zos);

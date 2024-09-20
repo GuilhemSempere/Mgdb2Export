@@ -137,9 +137,9 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
 		
-		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
+		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 	
-		File[] warningFiles = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individuals, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport).getWarningFiles();
+		File[] warningFiles = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individuals, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport).getWarningFiles();
 		
         zos.closeEntry();
         
@@ -150,7 +150,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         progress.setCurrentStepProgress((short) 100);
     }
     
-    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<Integer, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList vrdQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
+    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<Integer, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
 		
@@ -273,7 +273,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		};
 
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
-		ExportManager exportManager = new ExportManager(sModule, assembly == null ? null : assembly.getId(), mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, vrdQuery, samplesToExport, true, nQueryChunkSize, exportWriter, markerCount, progress);
+		ExportManager exportManager = new ExportManager(sModule, assembly == null ? null : assembly.getId(), mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, variantQuery, samplesToExport, true, nQueryChunkSize, exportWriter, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + "all_users" + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(os);

@@ -108,17 +108,18 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
 
         int ploidy = aProject == null ? 2 : aProject.getPloidyLevel();
         
+        // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
         FileOutputStream warningOS = new FileOutputStream(warningFile);
         for (File f : exportOutputs.getWarningFiles()) {
-	    	if (f.length() > 0) {
+	    	if (f != null && f.length() > 0) {
 	            BufferedReader in = new BufferedReader(new FileReader(f));
 	            String sLine;
 	            while ((sLine = in.readLine()) != null)
 	            	warningOS.write((sLine + "\n").getBytes());
 	            in.close();
+		    	f.delete();
 	    	}
-	    	f.delete();
         }
 
         ZipOutputStream os = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);

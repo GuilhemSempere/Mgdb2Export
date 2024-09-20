@@ -71,6 +71,8 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	
 	/** The individual oriented export handlers. */
 	static private TreeMap<String, AbstractIndividualOrientedExportHandler> individualOrientedExportHandlers = null;
+
+	protected String tmpFolderPath;
 		
 	/**
 	 * Export data.
@@ -99,7 +101,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @param sModule the module
      * @param nAssemblyId ID of the assembly to work with
 	 * @param tmpVarCollName the variant collection name (null if not temporary)
-	 * @param vrdQuery variantRunData
+	 * @param variantQuery the query to apply to the variant collection
 	 * @param markerCount number of variants to export
 	 * @param exportID the export id
 	 * @param individualsByPop List of the individuals in each group
@@ -109,7 +111,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @return a map providing one File per individual
 	 * @throws Exception the exception
 	 */
-	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String tmpVarCollName, BasicDBList vrdQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, final ProgressIndicator progress) throws Exception
+	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String tmpVarCollName, BasicDBList variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, final ProgressIndicator progress) throws Exception
 	{
 		long before = System.currentTimeMillis();
 
@@ -135,28 +137,30 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		Integer nAssemblyID= Assembly.getThreadBoundAssembly();
 
 		// Run data reading in a thread so that we can immediately wait for the streamed output (avoids the need for a global temporary file)
-		new Thread(() -> {
+		Thread hapMapExportThread = new Thread(() -> {
 			Assembly.setThreadAssembly(nAssemblyID);
-		    try (pos) {
+		    try {
 		        progress.addStep("Extracting genotypes");
 		        progress.moveToNextStep();
 
 		        HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyID)), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, vrdQuery, markerCount, null, samplesToExport));
+		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyID)), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQuery, markerCount, null, samplesToExport));
 		    } catch (Exception e) {
 		        LOG.error("Error reading genotypes for export", e);
 		        progress.setError(e.getMessage());
 		    }
-		}).start();
+		});
+		hapMapExportThread.start();
 
 		if (progress.isAborted() || progress.getError() != null)
 			return exportOutputs.get();
-
+		
+        int nLinesProcessed = -1;
+    	Integer[] indPos = individualPositions.values().toArray(new Integer[individualPositions.size()]);
+        String line;
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(new PipedInputStream(pos), StandardCharsets.UTF_8))) {
-	        String line;
-	        int nLinesProcessed = -1;
-	    	Integer[] indPos = individualPositions.values().toArray(new Integer[individualPositions.size()]);
-	        while ((line = reader.readLine()) != null) {
+
+	        while (nLinesProcessed < markerCount && (line = reader.readLine()) != null) {
 	        	if (nLinesProcessed++ == -1)
 	        		continue;	// skip header
 
@@ -164,16 +168,16 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 
 	        	// write genotypes collected in this chunk to each individual's file
 	        	for (int j=4; j<splitLine.length; j++) {
-					indOS[indPos[j - 4]].write((splitLine[j].replace("/", " ")).getBytes());
-					indOS[indPos[j - 4]].write(LINE_SEPARATOR.getBytes());
+					indOS[indPos[j - 4]].write((splitLine[j].replace("/", " ")).getBytes(StandardCharsets.UTF_8));
+					indOS[indPos[j - 4]].write(LINE_SEPARATOR.getBytes(StandardCharsets.UTF_8));
 	        	}
-	        	progress.setCurrentStepProgress(nLinesProcessed * 100 / markerCount);
 	        }
 	        for (BufferedOutputStream ios : indOS)
 	        	ios.close();
+	        
+    		hapMapExportThread.join();
+	        exportOutputs.get().setGenotypeFiles(indFiles);
         }
-
-        exportOutputs.get().setGenotypeFiles(indFiles);
 
 	 	if (!progress.isAborted())
 	 		LOG.info("createExportFiles took " + (System.currentTimeMillis() - before)/1000d + "s to process " + markerCount + " variants and " + indFiles.length + " individuals");
@@ -280,5 +284,10 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	@Override
 	public String getExportContentType() {
 		return "application/zip";
+	}
+	
+	@Override
+	public void setTmpFolder(String tmpFolderPath) {
+		this.tmpFolderPath = tmpFolderPath;	
 	}
 }
