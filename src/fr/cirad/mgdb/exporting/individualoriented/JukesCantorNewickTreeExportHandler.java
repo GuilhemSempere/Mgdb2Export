@@ -18,6 +18,7 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -44,6 +45,7 @@ import com.traviswheeler.ninja.TreeBuilderBinHeap;
 import com.traviswheeler.ninja.TreeNode;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.exporting.tools.nj.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.tools.ExperimentalFeature;
@@ -114,16 +116,29 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, File[] individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
+
+        // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
+        FileOutputStream warningOS = new FileOutputStream(warningFile);
+        for (File f : exportOutputs.getWarningFiles()) {
+	    	if (f != null && f.length() > 0) {
+	            BufferedReader in = new BufferedReader(new FileReader(f));
+	            String sLine;
+	            while ((sLine = in.readLine()) != null)
+	            	warningOS.write((sLine + "\n").getBytes());
+	            in.close();
+		    	f.delete();
+	    	}
+        }
+
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         
         ArrayList<String> exportedIndividuals = new ArrayList<>();
-        for (File indFile : individualExportFiles)
+        for (File indFile : exportOutputs.getGenotypeFiles())
         	try (Scanner scanner = new Scanner(indFile)) {
         		exportedIndividuals.add(scanner.nextLine());
         	}
@@ -140,8 +155,8 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
     	        return this.string.toString();
     	    }
     	};
-    	fastaOS.write(getHeaderlines(individualExportFiles.length, (int) markerCount).getBytes());
-        writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, individualExportFiles, warningFileWriter, progress);
+    	fastaOS.write(getHeaderlines(exportOutputs.getGenotypeFiles().length, (int) markerCount).getBytes());
+        writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
         fastaOS.write(getFooterlines().getBytes());
 
         progress.moveToNextStep();
@@ -212,7 +227,9 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 
     		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
     		TreeNode[] nodes = tb.build();
-    		nodes[nodes.length-1].buildTreeString(sb);		
+//    		nodes[nodes.length-1].rootTreeAt("CR1062");
+    		nodes[nodes.length-1].buildTreeString(sb);
+
         	
     		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + seqMap.size() + "individuals";
             zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
@@ -230,6 +247,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 //    		rootTree(treeString, /* "IRIS_313-10729" */ "CX280").buildTreeString(rootedTreeSB);
 //        	zos.write(rootedTreeSB.toString().getBytes());
 
+        	warningOS.close();
 	        if (warningFile.length() > 0 || missingDataWarnings.length() > 0) {
 	            progress.addStep("Adding lines to warning file");
 	            progress.moveToNextStep();
@@ -246,6 +264,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 		                progress.setCurrentStepProgress(nWarningCount++);
 		            }
 		            in.close();
+		            warningFile.delete();
 	            }
 	            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
 	            zos.closeEntry();
