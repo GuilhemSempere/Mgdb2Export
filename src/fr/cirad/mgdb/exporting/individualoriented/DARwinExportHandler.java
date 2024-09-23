@@ -20,7 +20,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -269,14 +268,13 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 }
             }
         }
-        finally
-        {
+        finally {
             for (File f : exportOutputs.getGenotypeFiles())
-                if (!f.delete())
-                {
+                if (!f.delete()) {
                     f.deleteOnExit();
                     LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
                 }
+            warningFile.delete();
         }
         os.closeEntry();
 

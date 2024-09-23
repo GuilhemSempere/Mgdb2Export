@@ -20,7 +20,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -116,87 +115,91 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         
         // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
-        FileOutputStream warningOS = new FileOutputStream(warningFile);
-        for (File f : exportOutputs.getWarningFiles()) {
-	    	if (f != null && f.length() > 0) {
-	            BufferedReader in = new BufferedReader(new FileReader(f));
-	            String sLine;
-	            while ((sLine = in.readLine()) != null)
-	            	warningOS.write((sLine + "\n").getBytes());
-	            in.close();
-		    	f.delete();
-	    	}
-        }
-
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
-        
-        ArrayList<String> exportedIndividuals = new ArrayList<>();
-        for (File indFile : exportOutputs.getGenotypeFiles())
-        	try (Scanner scanner = new Scanner(indFile)) {
-        		exportedIndividuals.add(scanner.nextLine());
-        	}
-
-        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + exportOutputs.getGenotypeFiles().length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
-
-        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
-
-        zos.putNextEntry(new ZipEntry(exportName + ".ped"));
-        writeGenotypeFile(zos, sModule, exportedIndividuals, individualPopulations, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
-    	zos.closeEntry();
-
-        zos.putNextEntry(new ZipEntry(exportName + ".map"));
-        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
-        int nMarkerIndex = 0;
-        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
-    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
-            progress.addStep("Writing map file");
-            progress.moveToNextStep();
-	        while (markerCursor.hasNext()) {
-	            Document exportVariant = markerCursor.next();
-	            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
-	            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
-	            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
-                String markerId = ((String) exportVariant.get("_id"));
-	            if (chrom == null)
-	            	unassignedMarkers.add(markerId);
-	            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
-	            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos) + LINE_SEPARATOR).getBytes());
-
-                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+        try {
+	        FileOutputStream warningOS = new FileOutputStream(warningFile);
+	        for (File f : exportOutputs.getWarningFiles()) {
+		    	if (f != null && f.length() > 0) {
+		            BufferedReader in = new BufferedReader(new FileReader(f));
+		            String sLine;
+		            while ((sLine = in.readLine()) != null)
+		            	warningOS.write((sLine + "\n").getBytes());
+		            in.close();
+			    	f.delete();
+		    	}
 	        }
-		}
-        zos.closeEntry();
-        
-        if (unassignedMarkers.size() > 0)
-        	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
-
-        warningOS.close();
-        if (warningFile.length() > 0) {
-            progress.addStep("Adding lines to warning file");
-            progress.moveToNextStep();
-            progress.setPercentageEnabled(false);
-            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-            int nWarningCount = 0;
-            BufferedReader in = new BufferedReader(new FileReader(warningFile));
-            String sLine;
-            while ((sLine = in.readLine()) != null) {
-                zos.write((sLine + "\n").getBytes());
-                progress.setCurrentStepProgress(nWarningCount++);
-            }
-            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-            in.close();
-            zos.closeEntry();
+	
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
+	        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
+	        
+	        ArrayList<String> exportedIndividuals = new ArrayList<>();
+	        for (File indFile : exportOutputs.getGenotypeFiles())
+	        	try (Scanner scanner = new Scanner(indFile)) {
+	        		exportedIndividuals.add(scanner.nextLine());
+	        	}
+	
+	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+	        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + exportOutputs.getGenotypeFiles().length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
+	
+	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+	        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
+	
+	        zos.putNextEntry(new ZipEntry(exportName + ".ped"));
+	        writeGenotypeFile(zos, sModule, exportedIndividuals, individualPopulations, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
+	    	zos.closeEntry();
+	
+	        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+	        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
+	        int nMarkerIndex = 0;
+	        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
+	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
+			try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+	            progress.addStep("Writing map file");
+	            progress.moveToNextStep();
+		        while (markerCursor.hasNext()) {
+		            Document exportVariant = markerCursor.next();
+		            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
+		            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+		            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+	                String markerId = ((String) exportVariant.get("_id"));
+		            if (chrom == null)
+		            	unassignedMarkers.add(markerId);
+		            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
+		            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos) + LINE_SEPARATOR).getBytes());
+	
+	                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+		        }
+			}
+	        zos.closeEntry();
+	        
+	        if (unassignedMarkers.size() > 0)
+	        	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
+	
+	        warningOS.close();
+	        if (warningFile.length() > 0) {
+	            progress.addStep("Adding lines to warning file");
+	            progress.moveToNextStep();
+	            progress.setPercentageEnabled(false);
+	            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+	            int nWarningCount = 0;
+	            BufferedReader in = new BufferedReader(new FileReader(warningFile));
+	            String sLine;
+	            while ((sLine = in.readLine()) != null) {
+	                zos.write((sLine + "\n").getBytes());
+	                progress.setCurrentStepProgress(nWarningCount++);
+	            }
+	            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
+	            in.close();
+	            zos.closeEntry();
+	        }
+	        zos.finish();
+	        zos.close();
+	    }
+        finally {
+            warningFile.delete();
         }
-        warningFile.delete();
 
-        zos.finish();
-        zos.close();
         progress.setPercentageEnabled(true);
         progress.setCurrentStepProgress((short) 100);
     }

@@ -20,7 +20,6 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -122,160 +121,164 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 
         // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
-        FileOutputStream warningOS = new FileOutputStream(warningFile);
-        for (File f : exportOutputs.getWarningFiles()) {
-	    	if (f != null && f.length() > 0) {
-	            BufferedReader in = new BufferedReader(new FileReader(f));
-	            String sLine;
-	            while ((sLine = in.readLine()) != null)
-	            	warningOS.write((sLine + "\n").getBytes());
-	            in.close();
-		    	f.delete();
-	    	}
-        }
-
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        
-        ArrayList<String> exportedIndividuals = new ArrayList<>();
-        for (File indFile : exportOutputs.getGenotypeFiles())
-        	try (Scanner scanner = new Scanner(indFile)) {
-        		exportedIndividuals.add(scanner.nextLine());
-        	}
-        
-    	OutputStream fastaOS = new OutputStream() {
-    	    private StringBuilder string = new StringBuilder();
-
-    	    @Override
-    	    public void write(int b) throws IOException {
-    	        this.string.append((char) b );
-    	    }
-
-    	    public String toString() {
-    	        return this.string.toString();
-    	    }
-    	};
-    	fastaOS.write(getHeaderlines(exportOutputs.getGenotypeFiles().length, (int) markerCount).getBytes());
-        writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
-        fastaOS.write(getFooterlines().getBytes());
-
-        progress.moveToNextStep();
-        try (Scanner scanner = new Scanner(fastaOS.toString())) {
-            List<String> sequenceNames = new ArrayList<>(), sequences = new ArrayList<>();
-            LinkedHashMap<String, String> seqMap = new LinkedHashMap<>();
-            
-            String currentSequenceName = null;
-            StringBuilder currentSequence = new StringBuilder(), missingDataWarnings = new StringBuilder();
-
-            while (scanner.hasNextLine()) {
-                String line = scanner.nextLine().trim();
-
-                if (line.startsWith(">")) {
-                    // Sequence header line
-                    if (currentSequenceName != null) {
-                    	String sequence = currentSequence.toString();
-                    	Matcher matcher = missingAllelePattern.matcher(sequence);
-                        int missingAlleleCount = 0;
-                        while (matcher.find())
-                            missingAlleleCount++;
-                        if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
-                        	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
-                        else {
-	                        sequenceNames.add(currentSequenceName);
-	                        sequences.add(sequence);
-	                        seqMap.put(currentSequenceName, sequence);
-                        }
-                    }
-                    currentSequenceName = line.substring(1);
-                    currentSequence = new StringBuilder();
-                } else {
-                    // Sequence data line
-                   	currentSequence.append(line);
-                }
-            }
-
-            // Add the last sequence
-            if (currentSequenceName != null) {
-            	String sequence = currentSequence.toString();
-            	Matcher matcher = missingAllelePattern.matcher(sequence);
-                int missingAlleleCount = 0;
-                while (matcher.find())
-                    missingAlleleCount++;
-                if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
-                	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
-                else {
-                    sequenceNames.add(currentSequenceName);
-                    sequences.add(sequence);
-                    seqMap.put(currentSequenceName, sequence);
-                }
-            }
-
-            double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
-        	if (progress.getError() != null || progress.isAborted())
-        		return;
-            
-            progress.moveToNextStep();
-            
-            int[][] intDistanceMatrix = new int[distanceMatrix.length][];
-            for (int i = 0; i < distanceMatrix.length; i++) {
-            	intDistanceMatrix[i] = new int[distanceMatrix.length - 1 - i];
-                for (int j = i + 1; j < distanceMatrix.length; j++)
-                	intDistanceMatrix[i][j - 1 - i] = (int) (distanceMatrix[i][j] * 100000000);
-            }
-
-    		StringBuffer sb = new StringBuffer(); 
-
-    		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
-    		TreeNode[] nodes = tb.build();
-//    		nodes[nodes.length-1].rootTreeAt("CR1062");
-    		nodes[nodes.length-1].buildTreeString(sb);
-
-        	
-    		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + seqMap.size() + "individuals";
-            zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-    		String treeString = sb.toString() + ";";
-        	zos.write(treeString.getBytes());
-    		
-//            NewickTreeRerooter rerooter = new NewickTreeRerooter();
-//            TreeNode root = rerooter.parseNewick(treeString);
-//            TreeNode newRoot = rerooter.reroot(root, "CX280");
-//            String newNewick = rerooter.toNewick(newRoot);
-//        	zos.write(newNewick.getBytes());
-            
-//        	zos.write(NewickRooter.rootTree(treeString, /* "IRIS_313-10729" */ "CX280").getBytes());
-//    		StringBuffer rootedTreeSB = new StringBuffer();
-//    		rootTree(treeString, /* "IRIS_313-10729" */ "CX280").buildTreeString(rootedTreeSB);
-//        	zos.write(rootedTreeSB.toString().getBytes());
-
-        	warningOS.close();
-	        if (warningFile.length() > 0 || missingDataWarnings.length() > 0) {
-	            progress.addStep("Adding lines to warning file");
-	            progress.moveToNextStep();
-	            progress.setPercentageEnabled(false);
-	            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-	            int nWarningCount = 0;
-	            if (missingDataWarnings.length() > 0)
-	            	zos.write(missingDataWarnings.toString().getBytes());
-	            if (warningFile.length() > 0) {
-		            BufferedReader in = new BufferedReader(new FileReader(warningFile));
+        try {
+	        FileOutputStream warningOS = new FileOutputStream(warningFile);
+	        for (File f : exportOutputs.getWarningFiles()) {
+		    	if (f != null && f.length() > 0) {
+		            BufferedReader in = new BufferedReader(new FileReader(f));
 		            String sLine;
-		            while ((sLine = in.readLine()) != null) {
-		                zos.write((sLine + "\n").getBytes());
-		                progress.setCurrentStepProgress(nWarningCount++);
-		            }
+		            while ((sLine = in.readLine()) != null)
+		            	warningOS.write((sLine + "\n").getBytes());
 		            in.close();
-		            warningFile.delete();
-	            }
-	            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-	            zos.closeEntry();
+			    	f.delete();
+		    	}
 	        }
-        	
-        	if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-            	IExportHandler.addMetadataEntryIfAny(sModule + "__" + seqMap.size() + "individuals_metadata.tsv", sModule, sExportingUser, seqMap.keySet(), individualMetadataFieldsToExport, zos, "individual");
+	
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
+	        
+	        ArrayList<String> exportedIndividuals = new ArrayList<>();
+	        for (File indFile : exportOutputs.getGenotypeFiles())
+	        	try (Scanner scanner = new Scanner(indFile)) {
+	        		exportedIndividuals.add(scanner.nextLine());
+	        	}
+	        
+	    	OutputStream fastaOS = new OutputStream() {
+	    	    private StringBuilder string = new StringBuilder();
+	
+	    	    @Override
+	    	    public void write(int b) throws IOException {
+	    	        this.string.append((char) b );
+	    	    }
+	
+	    	    public String toString() {
+	    	        return this.string.toString();
+	    	    }
+	    	};
+	    	fastaOS.write(getHeaderlines(exportOutputs.getGenotypeFiles().length, (int) markerCount).getBytes());
+	        writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
+	        fastaOS.write(getFooterlines().getBytes());
+	
+	        progress.moveToNextStep();
+	        try (Scanner scanner = new Scanner(fastaOS.toString())) {
+	            List<String> sequenceNames = new ArrayList<>(), sequences = new ArrayList<>();
+	            LinkedHashMap<String, String> seqMap = new LinkedHashMap<>();
+	            
+	            String currentSequenceName = null;
+	            StringBuilder currentSequence = new StringBuilder(), missingDataWarnings = new StringBuilder();
+	
+	            while (scanner.hasNextLine()) {
+	                String line = scanner.nextLine().trim();
+	
+	                if (line.startsWith(">")) {
+	                    // Sequence header line
+	                    if (currentSequenceName != null) {
+	                    	String sequence = currentSequence.toString();
+	                    	Matcher matcher = missingAllelePattern.matcher(sequence);
+	                        int missingAlleleCount = 0;
+	                        while (matcher.find())
+	                            missingAlleleCount++;
+	                        if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
+	                        	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
+	                        else {
+		                        sequenceNames.add(currentSequenceName);
+		                        sequences.add(sequence);
+		                        seqMap.put(currentSequenceName, sequence);
+	                        }
+	                    }
+	                    currentSequenceName = line.substring(1);
+	                    currentSequence = new StringBuilder();
+	                } else {
+	                    // Sequence data line
+	                   	currentSequence.append(line);
+	                }
+	            }
+	
+	            // Add the last sequence
+	            if (currentSequenceName != null) {
+	            	String sequence = currentSequence.toString();
+	            	Matcher matcher = missingAllelePattern.matcher(sequence);
+	                int missingAlleleCount = 0;
+	                while (matcher.find())
+	                    missingAlleleCount++;
+	                if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
+	                	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
+	                else {
+	                    sequenceNames.add(currentSequenceName);
+	                    sequences.add(sequence);
+	                    seqMap.put(currentSequenceName, sequence);
+	                }
+	            }
+	
+	            double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
+	        	if (progress.getError() != null || progress.isAborted())
+	        		return;
+	            
+	            progress.moveToNextStep();
+	            
+	            int[][] intDistanceMatrix = new int[distanceMatrix.length][];
+	            for (int i = 0; i < distanceMatrix.length; i++) {
+	            	intDistanceMatrix[i] = new int[distanceMatrix.length - 1 - i];
+	                for (int j = i + 1; j < distanceMatrix.length; j++)
+	                	intDistanceMatrix[i][j - 1 - i] = (int) (distanceMatrix[i][j] * 100000000);
+	            }
+	
+	    		StringBuffer sb = new StringBuffer(); 
+	
+	    		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
+	    		TreeNode[] nodes = tb.build();
+	//    		nodes[nodes.length-1].rootTreeAt("CR1062");
+	    		nodes[nodes.length-1].buildTreeString(sb);
+	
+	        	
+	    		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + seqMap.size() + "individuals";
+	            zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
+	    		String treeString = sb.toString() + ";";
+	        	zos.write(treeString.getBytes());
+	    		
+	//            NewickTreeRerooter rerooter = new NewickTreeRerooter();
+	//            TreeNode root = rerooter.parseNewick(treeString);
+	//            TreeNode newRoot = rerooter.reroot(root, "CX280");
+	//            String newNewick = rerooter.toNewick(newRoot);
+	//        	zos.write(newNewick.getBytes());
+	            
+	//        	zos.write(NewickRooter.rootTree(treeString, /* "IRIS_313-10729" */ "CX280").getBytes());
+	//    		StringBuffer rootedTreeSB = new StringBuffer();
+	//    		rootTree(treeString, /* "IRIS_313-10729" */ "CX280").buildTreeString(rootedTreeSB);
+	//        	zos.write(rootedTreeSB.toString().getBytes());
+	
+	        	warningOS.close();
+		        if (warningFile.length() > 0 || missingDataWarnings.length() > 0) {
+		            progress.addStep("Adding lines to warning file");
+		            progress.moveToNextStep();
+		            progress.setPercentageEnabled(false);
+		            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+		            int nWarningCount = 0;
+		            if (missingDataWarnings.length() > 0)
+		            	zos.write(missingDataWarnings.toString().getBytes());
+		            if (warningFile.length() > 0) {
+			            BufferedReader in = new BufferedReader(new FileReader(warningFile));
+			            String sLine;
+			            while ((sLine = in.readLine()) != null) {
+			                zos.write((sLine + "\n").getBytes());
+			                progress.setCurrentStepProgress(nWarningCount++);
+			            }
+			            in.close();
+		            }
+		            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
+		            zos.closeEntry();
+		        }
+	        	
+	        	if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+	            	IExportHandler.addMetadataEntryIfAny(sModule + "__" + seqMap.size() + "individuals_metadata.tsv", sModule, sExportingUser, seqMap.keySet(), individualMetadataFieldsToExport, zos, "individual");
+	        }
+	        zos.finish();
+	        zos.close();
+	    }
+        finally {
+            warningFile.delete();
         }
 
-        zos.finish();
-        zos.close();
         progress.setPercentageEnabled(true);
         progress.setCurrentStepProgress((short) 100);
     }
