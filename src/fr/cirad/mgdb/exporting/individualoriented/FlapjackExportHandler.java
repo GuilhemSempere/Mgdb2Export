@@ -18,15 +18,14 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
@@ -47,6 +46,7 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.Individual;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
@@ -90,98 +90,113 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
     }
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, File[] individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+        // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
-
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        
-        Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualExportFiles.length + "individuals";
-        int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
-
-        MongoCollection<Document> varColl = mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class));
-
-        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
-        	ArrayList<String> exportedIndividuals = new ArrayList<>();
-	        for (File indFile : individualExportFiles)
-	        try (Scanner scanner = new Scanner(indFile)) {
-	        	exportedIndividuals.add(scanner.nextLine());
+        try {
+	        FileOutputStream warningOS = new FileOutputStream(warningFile);
+	        for (File f : exportOutputs.getWarningFiles()) {
+		    	if (f != null && f.length() > 0) {
+		            BufferedReader in = new BufferedReader(new FileReader(f));
+		            String sLine;
+		            while ((sLine = in.readLine()) != null)
+		            	warningOS.write((sLine + "\n").getBytes());
+		            in.close();
+			    	f.delete();
+		    	}
 	        }
-        	IExportHandler.addMetadataEntryIfAny(exportName + ".phenotype", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "# fjFile = PHENOTYPE" + LINE_SEPARATOR);
+	
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+	        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+	        
+	        Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
+	        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
+	        int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
+	
+	        MongoCollection<Document> varColl = mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class));
+	
+	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
+	        	ArrayList<String> exportedIndividuals = new ArrayList<>();
+		        for (File indFile : exportOutputs.getGenotypeFiles())
+			        try (Scanner scanner = new Scanner(indFile)) {
+			        	exportedIndividuals.add(scanner.nextLine());
+			        }
+	        	IExportHandler.addMetadataEntryIfAny(exportName + ".phenotype", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "# fjFile = PHENOTYPE" + LINE_SEPARATOR);
+	        }
+	        
+	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+	        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
+	
+	        zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
+	        writeGenotypeFile(zos, nQueryChunkSize, varColl, varQuery, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
+	    	zos.closeEntry();
+	
+	
+	        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+	        zos.write(("# fjFile = MAP" + LINE_SEPARATOR).getBytes());
+	        int nMarkerIndex = 0;
+			byte[] separatorBytes = "\t".getBytes();
+			String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
+	        ArrayList<String> unassignedMarkers = new ArrayList<>();
+	
+	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
+	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+	            progress.addStep("Writing map file");
+	            progress.moveToNextStep();
+	            while (markerCursor.hasNext()) {
+	                Document exportVariant = markerCursor.next();
+	                Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
+	                String markerId = (String) exportVariant.get("_id");
+	                String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+	                Long pos = chrom == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+	                if (chrom == null) 
+	                    unassignedMarkers.add(markerId);
+	    
+	                String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
+	                zos.write(exportedId.getBytes());
+	                zos.write(separatorBytes);
+	                zos.write((chrom == null ? "0" : chrom).getBytes());
+	                zos.write(separatorBytes);
+	                zos.write((pos == null ? "0" : pos.toString()).getBytes());
+	                zos.write(LINE_SEPARATOR.getBytes());
+	    
+	                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+	            }
+	        }
+	        zos.closeEntry();
+	        
+	        if (unassignedMarkers.size() > 0)
+	            LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
+	
+	        warningOS.close();
+	        if (warningFile.length() > 0) {
+	            progress.addStep("Adding lines to warning file");
+	            progress.moveToNextStep();
+	            progress.setPercentageEnabled(false);
+	            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+	            int nWarningCount = 0;
+	            BufferedReader in = new BufferedReader(new FileReader(warningFile));
+	            String sLine;
+	            while ((sLine = in.readLine()) != null) {
+	                zos.write((sLine + "\n").getBytes());
+	                progress.setCurrentStepProgress(nWarningCount++);
+	            }
+	            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
+	            in.close();
+	            zos.closeEntry();
+	        }	
+	        zos.finish();
+	        zos.close();
+	    }
+        finally {
+            warningFile.delete();
         }
-        
-        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
-
-        zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
-        writeGenotypeFile(zos, sModule, nAssemblyId, nQueryChunkSize, varColl, varQuery, markerSynonyms, individualExportFiles, warningFileWriter, progress);
-    	zos.closeEntry();
-
-
-        zos.putNextEntry(new ZipEntry(exportName + ".map"));
-        zos.write(("# fjFile = MAP" + LINE_SEPARATOR).getBytes());
-        int nMarkerIndex = 0;
-		byte[] separatorBytes = "\t".getBytes();
-		String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
-        ArrayList<String> unassignedMarkers = new ArrayList<>();
-
-    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
-            progress.addStep("Writing map file");
-            progress.moveToNextStep();
-            while (markerCursor.hasNext()) {
-                Document exportVariant = markerCursor.next();
-                Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
-                String markerId = (String) exportVariant.get("_id");
-                String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
-                Long pos = chrom == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
-                if (chrom == null) 
-                    unassignedMarkers.add(markerId);
-    
-                String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
-                zos.write(exportedId.getBytes());
-                zos.write(separatorBytes);
-                zos.write((chrom == null ? "0" : chrom).getBytes());
-                zos.write(separatorBytes);
-                zos.write((pos == null ? "0" : pos.toString()).getBytes());
-                zos.write(LINE_SEPARATOR.getBytes());
-    
-                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
-            }
-        }
-        zos.closeEntry();
-        
-        if (unassignedMarkers.size() > 0)
-            LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
-
-        if (warningFile.length() > 0) {
-            progress.addStep("Adding lines to warning file");
-            progress.moveToNextStep();
-            progress.setPercentageEnabled(false);
-            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-            int nWarningCount = 0;
-            BufferedReader in = new BufferedReader(new FileReader(warningFile));
-            String sLine;
-            while ((sLine = in.readLine()) != null) {
-                zos.write((sLine + "\n").getBytes());
-                progress.setCurrentStepProgress(nWarningCount++);
-            }
-            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-            in.close();
-            zos.closeEntry();
-        }
-        warningFile.delete();
-
-        zos.finish();
-        zos.close();
         progress.setPercentageEnabled(true);
         progress.setCurrentStepProgress((short) 100);
     }
 
-    public void writeGenotypeFile(OutputStream os, String sModule, Integer nAssemblyId, int nQueryChunkSize, MongoCollection<Document> varColl, BasicDBObject varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, FileWriter warningFileWriter, ProgressIndicator progress) throws IOException, InterruptedException {
+    public void writeGenotypeFile(OutputStream os, int nQueryChunkSize, MongoCollection<Document> varColl, BasicDBObject varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, OutputStream warningOS, ProgressIndicator progress) throws IOException, InterruptedException {
    		os.write(("# fjFile = GENOTYPE" + LINE_SEPARATOR).getBytes());
         
    		boolean fWorkingOnRuns = varColl.getNamespace().getCollectionName().equals(MongoTemplateManager.getMongoCollectionName(VariantRunData.class));
@@ -205,7 +220,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
         short nProgress = 0, nPreviousProgress = 0;
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());   // use multiple threads so we can prepare several lines at once
-        HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
+        StringBuilder[] individualLines = new StringBuilder[nNConcurrentThreads];
 
         final ArrayList<Thread> threadsToWaitFor = new ArrayList<>(nNConcurrentThreads);
         final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
@@ -221,11 +236,12 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                 Thread thread = new Thread() {
                     @Override
                     public void run() {
-                        StringBuilder indLine = individualLines.get(nThreadIndex);
+                        StringBuilder indLine = individualLines[nThreadIndex];
                         if (indLine == null) {
                             indLine = new StringBuilder((int) f.length() / 3 /* rough estimation */);
-                            individualLines.put(nThreadIndex, indLine);
+                            individualLines[nThreadIndex] = indLine;
                         }
+
                         BufferedReader in = null;
                         try {
                             in = new BufferedReader(new FileReader(f));
@@ -239,7 +255,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 
                             int nMarkerIndex = 0;
                             while ((line = in.readLine()) != null) {
-                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningFileWriter, nMarkerIndex, individualId);
+                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningOS, nMarkerIndex, individualId);
                                 List<String> alleles = mostFrequentGenotype == null ? new ArrayList<>() : Helper.split(mostFrequentGenotype, " ");
                                 if (alleles.size() == 0 || (alleles.size() == 1 && alleles.get(0).length() == 0))
                                     indLine.append("\t-");
@@ -278,12 +294,12 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                         t.join();
                     
                     for (int j=0; j<nNConcurrentThreads && nWrittenIndividualCount++ < individualExportFiles.length; j++) {
-                        StringBuilder indLine = individualLines.get(j);
+                        StringBuilder indLine = individualLines[j];
                         if (indLine == null || indLine.length() == 0)
                             LOG.warn("No line to export for individual " + j);
                         else {
                             os.write(indLine.toString().getBytes());
-                            individualLines.put(j, new StringBuilder(initialStringBuilderCapacity.get()));
+                            individualLines[j] = new StringBuilder(initialStringBuilderCapacity.get());
                         }
                     }
 
@@ -304,8 +320,6 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                     LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
                 }
         }
-        if (warningFileWriter != null)
-            warningFileWriter.close();
     }
 
     /* (non-Javadoc)

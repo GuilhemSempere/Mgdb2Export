@@ -18,15 +18,14 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileReader;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -47,6 +46,7 @@ import com.mongodb.BasicDBObject;
 import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
 import fr.cirad.mgdb.model.mongo.maintypes.Individual;
@@ -98,7 +98,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
     }
 
 	@Override
-	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, File[] individualExportFiles, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         GenotypingProject aProject = mongoTemplate.findOne(new Query(Criteria.where(GenotypingProject.FIELDNAME_PLOIDY_LEVEL).exists(true)), GenotypingProject.class);
         if (aProject == null) {
@@ -106,13 +106,24 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         }
 
         int ploidy = aProject == null ? 2 : aProject.getPloidyLevel();
-
+        
+        // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
+        FileOutputStream warningOS = new FileOutputStream(warningFile);
+        for (File f : exportOutputs.getWarningFiles()) {
+	    	if (f != null && f.length() > 0) {
+	            BufferedReader in = new BufferedReader(new FileReader(f));
+	            String sLine;
+	            while ((sLine = in.readLine()) != null)
+	            	warningOS.write((sLine + "\n").getBytes());
+	            in.close();
+		    	f.delete();
+	    	}
+        }
 
         ZipOutputStream os = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualExportFiles.length + "individuals";
+		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
         
         String missingGenotype = "";
         for (int j = 0; j < ploidy; j++)
@@ -120,7 +131,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         String finalMissingGenotype = missingGenotype;
 
         os.putNextEntry(new ZipEntry(exportName + ".var"));
-        os.write(("@DARwin 5.0 - ALLELIC - " + ploidy + LINE_SEPARATOR + individualExportFiles.length + "\t" + markerCount * ploidy + LINE_SEPARATOR + "N°").getBytes());
+        os.write(("@DARwin 5.0 - ALLELIC - " + ploidy + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + markerCount * ploidy + LINE_SEPARATOR + "N°").getBytes());
 
         short nProgress = 0, nPreviousProgress = 0;
 
@@ -148,7 +159,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         }
         
         ArrayList<String> exportedIndividuals = new ArrayList<>();
-        for (File indFile : individualExportFiles)
+        for (File indFile : exportOutputs.getGenotypeFiles())
             try (Scanner scanner = new Scanner(indFile)) {
                 exportedIndividuals.add(scanner.nextLine());
             }
@@ -159,14 +170,14 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         final Collection<String> finalMdFieldsToExport = individualMetadataFieldsToExport != null ? individualMetadataFieldsToExport : indMap.values().stream().flatMap(individual -> individual.getAdditionalInfo().keySet().stream()).collect(Collectors.toSet());
 
         int i = 0, nNConcurrentThreads = Math.max(1, Runtime.getRuntime().availableProcessors());    // use multiple threads so we can prepare several lines at once
-        HashMap<Integer, StringBuilder> individualLines = new HashMap<>(nNConcurrentThreads);
+        StringBuilder[] individualLines = new StringBuilder[nNConcurrentThreads];
 
         final ArrayList<Thread> threadsToWaitFor = new ArrayList<>(nNConcurrentThreads);
         final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
         
         try {
             int nWrittenIndividualCount = 0;
-            for (final File f : individualExportFiles) {
+            for (final File f : exportOutputs.getGenotypeFiles()) {
                 if (progress.isAborted() || progress.getError() != null)
                     return;
 
@@ -175,10 +186,10 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 Thread thread = new Thread() {
                     @Override
                     public void run() {
-                        StringBuilder indLine = individualLines.get(nThreadIndex);
+                        StringBuilder indLine = individualLines[nThreadIndex];
                         if (indLine == null) {
                             indLine = new StringBuilder((int) f.length() / 3 /* rough estimation */);
-                            individualLines.put(nThreadIndex, indLine);
+                            individualLines[nThreadIndex] = indLine;
                         }
 
                         BufferedReader in = null;
@@ -202,7 +213,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                             int nMarkerIndex = 0;
 
                             while ((line = in.readLine()) != null) {
-                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningFileWriter, nMarkerIndex, individualId);
+                            	String mostFrequentGenotype = findOutMostFrequentGenotype(line, warningOS, nMarkerIndex, individualId);
                                 String codedGenotype = "";
                                 if (mostFrequentGenotype != null && mostFrequentGenotype.length() > 0) {
                                     for (String allele : mostFrequentGenotype.split(" ")) {
@@ -234,21 +245,21 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 thread.start();
                 threadsToWaitFor.add(thread);
 
-                if (++i % nNConcurrentThreads == 0 || i == individualExportFiles.length) {
+                if (++i % nNConcurrentThreads == 0 || i == exportOutputs.getGenotypeFiles().length) {
                     for (Thread t : threadsToWaitFor) // wait for all previously launched async threads
                            t.join();
                     
-                    for (int j=0; j<nNConcurrentThreads && nWrittenIndividualCount++ < individualExportFiles.length; j++) {
-                        StringBuilder indLine = individualLines.get(j);
+                    for (int j=0; j<nNConcurrentThreads && nWrittenIndividualCount++ < exportOutputs.getGenotypeFiles().length; j++) {
+                        StringBuilder indLine = individualLines[j];
                         if (indLine == null || indLine.length() == 0)
                             LOG.warn("No line to export for individual " + j);
                         else {
                             os.write(indLine.toString().getBytes());
-                            individualLines.put(j, new StringBuilder(initialStringBuilderCapacity.get()));
+                            individualLines[j] = new StringBuilder(initialStringBuilderCapacity.get());
                         }
                     }
 
-                    nProgress = (short) (i * 100 / individualExportFiles.length);
+                    nProgress = (short) (i * 100 / exportOutputs.getGenotypeFiles().length);
                     if (nProgress > nPreviousProgress) {
                         progress.setCurrentStepProgress(nProgress);
                         nPreviousProgress = nProgress;
@@ -257,19 +268,18 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 }
             }
         }
-        finally
-        {
-            for (File f : individualExportFiles)
-                if (!f.delete())
-                {
+        finally {
+            for (File f : exportOutputs.getGenotypeFiles())
+                if (!f.delete()) {
                     f.deleteOnExit();
                     LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
                 }
+            warningFile.delete();
         }
         os.closeEntry();
 
         os.putNextEntry(new ZipEntry(exportName + ".don"));
-        String donFileHeader = "@DARwin 5.0 - DON -" + LINE_SEPARATOR + individualExportFiles.length + "\t" + (1 + finalMdFieldsToExport.size()) + LINE_SEPARATOR + "N°" + "\t" + "individual";
+        String donFileHeader = "@DARwin 5.0 - DON -" + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + (1 + finalMdFieldsToExport.size()) + LINE_SEPARATOR + "N°" + "\t" + "individual";
         for (String header : finalMdFieldsToExport)
             donFileHeader += "\t" + header;
         os.write((donFileHeader + LINE_SEPARATOR).getBytes());
@@ -278,7 +288,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
 
         os.closeEntry();
 
-        warningFileWriter.close();
+        warningOS.close();
         if (warningFile.length() > 0) {
             progress.addStep("Adding lines to warning file");
             progress.moveToNextStep();

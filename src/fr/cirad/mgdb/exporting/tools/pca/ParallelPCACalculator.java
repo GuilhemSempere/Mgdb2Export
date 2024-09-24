@@ -1,12 +1,11 @@
 package fr.cirad.mgdb.exporting.tools.pca;
 
 import java.io.IOException;
-import java.io.Writer;
+import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Scanner;
-import java.util.regex.Pattern;
 
 import org.apache.log4j.Logger;
 
@@ -28,7 +27,7 @@ public class ParallelPCACalculator {
     	this.nMaxMissingDataPercentageForIndividuals = nMaxMissingDataPercentageForIndividuals;
     }
 
-    public double[][] readAndTransposeEigenstratGenoString(String fileContents, List<String> variantNames, Writer warningFileWriter) throws IOException {
+    public double[][] readAndTransposeEigenstratGenoString(String fileContents, OutputStream warningOS) throws IOException {
         List<String> lines = new ArrayList<>();
         Scanner scanner = new Scanner(fileContents);
         while (scanner.hasNextLine()) {
@@ -59,7 +58,7 @@ public class ParallelPCACalculator {
                 	transposedData[col].add(value);
             }
             if (nMissingDataCount * 100 / line.length() > nMaxMissingDataPercentageForIndividuals) {
-            	warningFileWriter.write("- Excluding variant " + variantNames.get(row) + " from PCA export, it has too much missing data: " + (nMissingDataCount * 100 / line.length()) + "%\n");
+            	warningOS.write(("- Excluding variant #" + row + " from PCA export, it has too much missing data: " + (nMissingDataCount * 100 / line.length()) + "%\n").getBytes());
             	variantsToIgnore.add(row);
             }
         }

@@ -18,6 +18,7 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
@@ -44,6 +45,7 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.mongodb.BasicDBList;
 
 import cern.colt.matrix.tdouble.DoubleMatrix2D;
+import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.exporting.tools.pca.ParallelPCACalculator;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
@@ -108,7 +110,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	}
 
     @Override
-	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
 		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
 
 	    // Check if there is enough memory
@@ -119,8 +121,6 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 //	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         
@@ -137,7 +137,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	        }
         }
         
-        Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
+        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 
 		Map<String, Integer> individualPositions = new LinkedHashMap<>();
 		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
@@ -156,18 +156,31 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
     	    }
     	};
     	
-    	StringWriter snpWriter = new StringWriter();
-        writeGenotypeFile(eigenstratGenoOS, snpWriter, sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, individualPositions, warningFileWriter);
+        ExportOutputs exportOutputs = writeGenotypeFile(eigenstratGenoOS, sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, individualPositions);
 
         if (progress.isAborted())
             return;
 
+        // save existing warnings into a temp file so we can append to it
+        File warningFile = File.createTempFile("export_warnings_", "");
         try {
+	        FileOutputStream warningOS = new FileOutputStream(warningFile);
+	        for (File f : exportOutputs.getWarningFiles()) {
+		    	if (f != null && f.length() > 0) {
+		            BufferedReader in = new BufferedReader(new FileReader(f));
+		            String sLine;
+		            while ((sLine = in.readLine()) != null)
+		            	warningOS.write((sLine + "\n").getBytes());
+		            in.close();
+			    	f.delete();
+		    	}
+	        }
+
         	long availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
     	    System.err.println("availableRAM before -> " + availableRAM/1024);
             progress.moveToNextStep();
             ParallelPCACalculator pcaCalc = new ParallelPCACalculator();            
-            double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(eigenstratGenoOS.toString(), Arrays.stream(snpWriter.toString().split("\n")).map(line -> line.split("\t")[0]).toList(), warningFileWriter);
+            double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(eigenstratGenoOS.toString(), warningOS);
             eigenstratGenoOS = null;
 
 	        if (progress.isAborted())
@@ -204,10 +217,8 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	        		zos.write(("\t" + dataMatrix[r][c]).getBytes());
 	        	}
 	        }
-	
-	    	if (warningFileWriter != null)
-	    		warningFileWriter.close();
 
+	        warningOS.close();
 	        if (warningFile.length() > 0) {
 	            progress.addStep("Adding lines to warning file");
 	            progress.moveToNextStep();
@@ -224,10 +235,12 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	            in.close();
 	            zos.closeEntry();
 	        }
-	        warningFile.delete();
         }
         catch (OutOfMemoryError oome) {
         	progress.setError("Unable to compute PCA (dataset is too large): " + oome.getMessage());
+        }
+        finally {
+            warningFile.delete();
         }
 
         zos.finish();

@@ -16,10 +16,8 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.markeroriented;
 
-import java.io.BufferedReader;
 import java.io.File;
-import java.io.FileReader;
-import java.io.FileWriter;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -45,7 +43,6 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.mongodb.BasicDBList;
 import com.mongodb.client.MongoCollection;
 
-import fr.cirad.mgdb.exporting.AbstractExportWritingThread;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
@@ -56,6 +53,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.tools.AlphaNumericComparator;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -93,7 +91,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
@@ -101,9 +99,6 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		Map<String, Integer> individualPositions = new LinkedHashMap<>();
 		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
 			individualPositions.put(ind, individualPositions.size());
-
-		File warningFile = File.createTempFile("export_warnings_", "");
-        FileWriter warningFileWriter = new FileWriter(warningFile);
 
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualPositions.size() + "individuals";
@@ -123,13 +118,12 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
         typeToOntology.put(Type.MNP.toString(), "SO:0001059");
 
         final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
-		
-        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 		
-		AbstractExportWritingThread writingThread = new AbstractExportWritingThread() {
-			public void run() {
+		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
+			@Override
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {	
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				for (Collection<VariantRunData> runsToWrite : markerRunsToWrite) {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -194,10 +188,10 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
                             if (genotypeCounts.size() == 1 || genotypeCounts.values().stream().limit(2).distinct().count() == 2)
                             	mostFrequentGenotype = genotypeCounts.keySet().iterator().next().toString();
 
-		                    String exportedGT = mostFrequentGenotype == null ? "." : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate), "/");
+		                    String exportedGT = mostFrequentGenotype == null ? "." : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate).stream().map(all -> "N".equals(all) ? "D" : ("NN".equals(all) ? "I" : all)).toList(), "/");
 
 		                    if (genotypeCounts.size() > 1)
-		                    	warningFileWriter.write("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n");
+		                    	warningOS.write(("- Dissimilar genotypes found for variant " + idOfVarToWrite + ", individual " + individual + ". " + (mostFrequentGenotype == null ? "Exporting as missing data" : "Exporting most frequent: " + exportedGT) + "\n").getBytes());
 		                    
 		                    sb.append(fFirstIndividual ? "" : ",").append(individual).append(":").append(exportedGT);
 		                    fFirstIndividual = false;
@@ -217,29 +211,15 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 			}
 		};
 		
-		Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
-		ExportManager exportManager = new ExportManager(mongoTemplate, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantRunDataQueries.isEmpty() ? variantRunDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, warningFileWriter, progress);
-		exportManager.readAndWrite();	
+		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		if (tmpFolderPath != null)
+			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
+		exportManager.readAndWrite(zos);	
         zos.closeEntry();
-        
-        if (unassignedMarkers.size() > 0)
-        	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
 
-        warningFileWriter.close();
-        if (warningFile.length() > 0) {
-            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
-            int nWarningCount = 0;
-            BufferedReader in = new BufferedReader(new FileReader(warningFile));
-            String sLine;
-            while ((sLine = in.readLine()) != null) {
-                zos.write((sLine + "\n").getBytes());
-                nWarningCount++;
-            }
-            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-            in.close();
-            zos.closeEntry();
-        }
-        warningFile.delete();
+		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
+        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
 
         zos.finish();
         zos.close();
