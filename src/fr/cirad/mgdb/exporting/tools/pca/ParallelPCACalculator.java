@@ -1,6 +1,7 @@
 package fr.cirad.mgdb.exporting.tools.pca;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -27,48 +28,46 @@ public class ParallelPCACalculator {
     	this.nMaxMissingDataPercentageForIndividuals = nMaxMissingDataPercentageForIndividuals;
     }
 
-    public double[][] readAndTransposeEigenstratGenoString(String fileContents, OutputStream warningOS) throws IOException {
-        List<String> lines = new ArrayList<>();
-        Scanner scanner = new Scanner(fileContents);
-        while (scanner.hasNextLine()) {
-            lines.add(scanner.nextLine());
-        }
-        scanner.close();
-
-        if (lines.isEmpty()) {
-            return new double[0][0];
-        }
-
-        int variantCount = lines.size();
-        int individualCount = lines.get(0).length();
-        List<Double>[] transposedData = new List[individualCount];
-        ArrayList<Integer> variantsToIgnore = new ArrayList<>();
-
-        for (int row = 0; row < variantCount; row++) {
-            String line = lines.get(row);
-            int nMissingDataCount = 0;
-            for (int col = 0; col < individualCount; col++) {
-            	if (row == 0)
-            		transposedData[col] = new ArrayList<>();
-                double value = Character.getNumericValue(line.charAt(col));
-                if (value == 9) {
-                    transposedData[col].add(Double.NaN);  // Handle missing data with NaN
-                    nMissingDataCount++;
-                } else
-                	transposedData[col].add(value);
-            }
-            if (nMissingDataCount * 100 / line.length() > nMaxMissingDataPercentageForIndividuals) {
-            	warningOS.write(("- Excluding variant #" + row + " from PCA export, it has too much missing data: " + (nMissingDataCount * 100 / line.length()) + "%\n").getBytes());
-            	variantsToIgnore.add(row);
-            }
-        }
-        
-        if (!variantsToIgnore.isEmpty())
-        	for (List<Double> indLine : transposedData)
-        		for (int i = variantsToIgnore.size() - 1; i >= 0; i--)
-        			indLine.remove((int) variantsToIgnore.get(i));
-
-        return Arrays.stream(transposedData).map(list -> list.stream().mapToDouble(Double::doubleValue).toArray()).toArray(double[][]::new);
+    public double[][] readAndTransposeEigenstratGenoString(InputStream eigenstratContents, OutputStream warningOS) throws IOException {
+	        try (Scanner scanner = new Scanner(eigenstratContents)) {
+	
+	        if (!scanner.hasNextLine())
+	            return new double[0][0];
+	
+	        int row = 0;
+	        List<Double>[] transposedData = null;
+	        ArrayList<Integer> variantsToIgnore = new ArrayList<>();
+	        
+	        while (scanner.hasNextLine()) {
+	            String line = scanner.nextLine();
+	            if (row == 0)
+	            	transposedData = new List[line.length()];
+	
+	            int nMissingDataCount = 0;
+	            for (int col = 0; col < transposedData.length; col++) {
+	            	if (row == 0)
+	            		transposedData[col] = new ArrayList<>();
+	                double value = Character.getNumericValue(line.charAt(col));
+	                if (value == 9) {
+	                    transposedData[col].add(Double.NaN);  // Handle missing data with NaN
+	                    nMissingDataCount++;
+	                } else
+	                	transposedData[col].add(value);
+	            }
+	            if (nMissingDataCount * 100 / line.length() > nMaxMissingDataPercentageForIndividuals) {
+	            	warningOS.write(("- Excluding variant #" + row + " from PCA export, it has too much missing data: " + (nMissingDataCount * 100 / line.length()) + "%\n").getBytes());
+	            	variantsToIgnore.add(row);
+	            }
+	            row++;
+	        }
+	        
+	        if (!variantsToIgnore.isEmpty())
+	        	for (List<Double> indLine : transposedData)
+	        		for (int i = variantsToIgnore.size() - 1; i >= 0; i--)
+	        			indLine.remove((int) variantsToIgnore.get(i));
+	
+	        return Arrays.stream(transposedData).map(list -> list.stream().mapToDouble(Double::doubleValue).toArray()).toArray(double[][]::new);
+	    }
     }
 
     public double[][] imputeMissingValues(double[][] data) {

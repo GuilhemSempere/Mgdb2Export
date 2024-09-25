@@ -16,8 +16,10 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.individualoriented;
 
+import java.io.BufferedInputStream;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.FileWriter;
@@ -143,27 +145,16 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
 			individualPositions.put(ind, individualPositions.size());
 
-		OutputStream eigenstratGenoOS = new OutputStream() {
-    	    private StringBuilder string = new StringBuilder();
-
-    	    @Override
-    	    public void write(int b) throws IOException {
-    	        this.string.append((char) b );
-    	    }
-
-    	    public String toString() {
-    	        return this.string.toString();
-    	    }
-    	};
-    	
-        ExportOutputs exportOutputs = writeGenotypeFile(eigenstratGenoOS, sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, individualPositions);
-
         if (progress.isAborted())
             return;
 
-        // save existing warnings into a temp file so we can append to it
-        File warningFile = File.createTempFile("export_warnings_", "");
+        File tempEigenstratFile = File.createTempFile("eigenstrat_for_pca__", "");
+        File warningFile = File.createTempFile("export_warnings_", ""); // save existing warnings into a temp file so we can append to it
         try {
+    		OutputStream eigenstratGenoOS = new FileOutputStream(tempEigenstratFile);   	
+            ExportOutputs exportOutputs = writeGenotypeFile(eigenstratGenoOS, sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, individualPositions);
+            eigenstratGenoOS.close();
+
 	        FileOutputStream warningOS = new FileOutputStream(warningFile);
 	        for (File f : exportOutputs.getWarningFiles()) {
 		    	if (f != null && f.length() > 0) {
@@ -180,8 +171,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
     	    System.err.println("availableRAM before -> " + availableRAM/1024);
             progress.moveToNextStep();
             ParallelPCACalculator pcaCalc = new ParallelPCACalculator();            
-            double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(eigenstratGenoOS.toString(), warningOS);
-            eigenstratGenoOS = null;
+            double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(new BufferedInputStream(new FileInputStream(tempEigenstratFile)), warningOS);
 
 	        if (progress.isAborted())
 	            return;
@@ -203,7 +193,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	        double[] eigenValues = pcaResult.getEigenValues();
 	        
 	        availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-		    System.out.println("availableRAM after -> " + availableRAM/1024);
+		    System.err.println("availableRAM after -> " + availableRAM/1024);
 
 			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + dataMatrix[0].length + "variants__" + sortedIndividuals.size() + "individuals";
 	        zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
@@ -241,6 +231,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
         }
         finally {
             warningFile.delete();
+            tempEigenstratFile.delete();
         }
 
         zos.finish();
