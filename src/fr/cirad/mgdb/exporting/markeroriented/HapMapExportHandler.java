@@ -200,7 +200,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		                boolean fIsSNP = variant.getType().equals(Type.SNP.toString());
 		                ReferencePosition rp = variant.getReferencePosition(assembly == null ? null : assembly.getId());
-						sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.getKnownAlleles(), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + (fSkipHapmapColumns ? "" : ("\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA")));
+		                sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.safelyGetKnownAlleles(mongoTemplate), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + (fSkipHapmapColumns ? "" : ("\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA")));
 
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
 
