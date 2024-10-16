@@ -25,6 +25,18 @@
 		    <artifactId>parallelcolt</artifactId>
 		    <version>0.10.1</version>
 		</dependency>
+
+<!--		<dependency>-->
+<!--		    <groupId>colt</groupId>-->
+<!--		    <artifactId>colt</artifactId>-->
+<!--		    <version>1.2.0</version>-->
+<!--		</dependency>-->
+
+		<dependency>
+		    <groupId>org.ejml</groupId>
+		    <artifactId>ejml-simple</artifactId>
+		    <version>0.43.1</version>
+		</dependency>
     </dependencies>
 
     <build>

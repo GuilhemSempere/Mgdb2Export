@@ -36,13 +36,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.log4j.Logger;
+import org.ejml.data.FMatrixRMaj;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
 
-import cern.colt.matrix.tdouble.DoubleMatrix2D;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
@@ -113,16 +113,17 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 
 	    // Check if there is enough memory
 //		System.gc();
-	    Runtime runtime = Runtime.getRuntime();
-	    long matrixSize = markerCount * sortedIndividuals.size(), availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-	    if (matrixSize * 3 > availableRAM * 0.01)	// Empirically, we found that if matrix sizer is < 1% of the available memory, SVD calculation is possible. But we account for concurrency by making sure we have at least 3x more RAM available
-	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
+//	    Runtime runtime = Runtime.getRuntime();
+//	    long availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
+//	    long matrixSize = markerCount * sortedIndividuals.size();
+//	    if (matrixSize * 3 > availableRAM * 0.01)	// Empirically, we found that if matrix sizer is < 1% of the available memory, SVD calculation is possible. But we account for concurrency by making sure we have at least 3x more RAM available
+//	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         
-		
+
 //      FIXME: remove me (only for testing)
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
         	if (!IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, "individual")) {
@@ -163,11 +164,9 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 		    	}
 	        }
 
-        	availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-    	    System.err.println("availableRAM before -> " + availableRAM/1024 + " ouf of " + runtime.totalMemory()/1024);
             progress.moveToNextStep();
             ParallelPCACalculator pcaCalc = new ParallelPCACalculator();            
-            double[][] data = pcaCalc.readAndTransposeEigenstratGenoString(new BufferedInputStream(new FileInputStream(tempEigenstratFile)), warningOS);
+            float[][] data = pcaCalc.readAndTransposeEigenstratGenoString(new BufferedInputStream(new FileInputStream(tempEigenstratFile)), warningOS, progress, (int) markerCount);
 
 	        if (progress.isAborted())
 	            return;
@@ -183,25 +182,32 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	            return;
 	        
 	        progress.moveToNextStep();
-	        ParallelPCACalculator.PCAResult pcaResult = pcaCalc.performPCA(data);
-	        DoubleMatrix2D eigenVectors = pcaResult.getEigenVectors();
-	        double[][] dataMatrix = pcaCalc.transformData(data, eigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
-	        double[] eigenValues = pcaResult.getEigenValues();
-	        
-	        availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-		    System.err.println("availableRAM after -> " + availableRAM/1024 + " ouf of " + runtime.totalMemory()/1024);
 
+//	        // compute with doubles
+//	        double[][] doubleData = new double[data.length][data.length == 0 ? 0 : data[0].length];
+//	        for (int i = 0; i < data.length; i++)
+//	            for (int j = 0; j < (data.length == 0 ? 0 : data[0].length); j++)
+//	                doubleData[i][j] = (double) data[i][j];
+//	        ParallelPCACalculator.PCAResult pcaResult = pcaCalc.performPCA(doubleData);
+//	        DoubleMatrix2D eigenVectors = pcaResult.getEigenVectors();
+//	        double[][] dataMatrix = pcaCalc.transformData(doubleData, eigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
+//	        double[] eigenValues = pcaResult.getEigenValues();
+	        
+	        // compute with floats
+	        ParallelPCACalculator.FloatPCAResult floatPcaResult = pcaCalc.performPCA_float_disk(data);
+	        FMatrixRMaj floatEigenVectors = floatPcaResult.getEigenVectors();
+	        float[][] dataMatrix = pcaCalc.transformData(data, floatEigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
+	        float[] eigenValues = floatPcaResult.getEigenValues();
+	        
 			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + dataMatrix[0].length + "variants__" + sortedIndividuals.size() + "individuals";
 	        zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
 	        zos.write("#eigvals:".getBytes());
-	    	for (int c=0; c<eigenValues.length; c++) {
+	    	for (int c=0; c<eigenValues.length; c++)
 	    		zos.write(("\t" + eigenValues[c]).getBytes());
-	    	}
 	        for (int r=0; r<sortedIndividuals.size(); r++) {
 	        	zos.write(("\n" + sortedIndividuals.get(r)).getBytes());
-	        	for (int c=0; c<dataMatrix[r].length; c++) {
+	        	for (int c=0; c<dataMatrix[r].length; c++)
 	        		zos.write(("\t" + dataMatrix[r][c]).getBytes());
-	        	}
 	        }
 
 	        warningOS.close();
@@ -223,6 +229,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	        }
         }
         catch (OutOfMemoryError oome) {
+	    	LOG.error("Not enough RAM to transpose matrix", oome);
         	progress.setError("Unable to compute PCA (dataset is too large): " + oome.getMessage());
         }
         finally {
