@@ -25,7 +25,7 @@ public class FileBackedDenseColumnFloatMatrix2D {
             // Write the data to the memory-mapped file
             for (int i = 0; i < rows; i++) {
                 for (int j = 0; j < columns; j++) {
-                    buffer.putFloat(i * columns * Float.BYTES + j * Float.BYTES, data[i][j]);
+                    buffer.putFloat(i * columns * Float.BYTES + j * Float.BYTES, data[i][j]);	// this throws IndexOutOfBoundsException above 2Gb
                 }
             }
         }

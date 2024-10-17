@@ -208,13 +208,13 @@ public class ParallelPCACalculator {
 
         // Create a memory-mapped file for the data matrix
         File matrixFile = File.createTempFile("FileBackedDenseColumnFloatMatrix2D_", "");
-        FileBackedDenseColumnFloatMatrix2D fileDataMatrix = new FileBackedDenseColumnFloatMatrix2D(data, matrixFile);
 
         int numSamples = data.length;
-        data = null;  // free up memory
-        
+
         try {
             // Convert the memory-mapped matrix to an FMatrixRBlock for large-scale SVD
+            FileBackedDenseColumnFloatMatrix2D fileDataMatrix = new FileBackedDenseColumnFloatMatrix2D(data, matrixFile);
+            data = null;  // free up memory
             FMatrixRBlock blockMatrix = new FMatrixRBlock(fileDataMatrix.numRows(), fileDataMatrix.numCols(), blockSize);
             for (int i = 0; i < fileDataMatrix.numRows(); i++)
                 for (int j = 0; j < fileDataMatrix.numCols(); j++)
@@ -272,19 +272,18 @@ public class ParallelPCACalculator {
         
 //      DenseColumnDoubleMatrix2D dataMatrix = new DenseColumnDoubleMatrix2D(data);
         File matrixFile = File.createTempFile("FileBackedDenseColumnDoubleMatrix2D_", "");
-        FileBackedDenseColumnDoubleMatrix2D dataMatrix = new FileBackedDenseColumnDoubleMatrix2D(data, matrixFile);
 
-        data = null;	// freeing memory (won't be able to call hasInvalidValues after that...
         try {
+            FileBackedDenseColumnDoubleMatrix2D dataMatrix = new FileBackedDenseColumnDoubleMatrix2D(data, matrixFile);
+            data = null;  // free up memory
 	        DenseDoubleSingularValueDecomposition svd = new DenseDoubleSingularValueDecomposition(dataMatrix, true, false);
 	        double[] singularValues = svd.getSingularValues();
 	        DoubleMatrix2D eigenVectors = svd.getV();	// FIXME: this causes Java heap space on big datasets!!
 	
 	        // Calculate eigenvalues from singular values
 	        double[] eigenValues = new double[singularValues.length];
-	        for (int i = 0; i < singularValues.length; i++) {
+	        for (int i = 0; i < singularValues.length; i++)
 	            eigenValues[i] = (singularValues[i] * singularValues[i]) / (numSamples - 1);
-	        }
 	
 	        return new PCAResult(eigenVectors, eigenValues, singularValues);
         }
