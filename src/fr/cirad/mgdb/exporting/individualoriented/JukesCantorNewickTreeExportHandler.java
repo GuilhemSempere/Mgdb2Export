@@ -46,7 +46,6 @@ import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.exporting.tools.nj.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.tools.ExperimentalFeature;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -55,7 +54,7 @@ import htsjdk.variant.variantcontext.VariantContext.Type;
 /**
  * The Class JukesCantorNewickTreeExportHandler.
  */
-public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExportHandler implements ExperimentalFeature {
+public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExportHandler {
 
 	private int nMaxMissingDataPercentageForIndividuals = 50;
 	
@@ -97,7 +96,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zipped Newick file containing a Jukes-Cantor neighbour-joining tree based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
+    	return "Exports a zipped <a target='_blank' href='https://en.wikipedia.org/wiki/Newick_format'>Newick</a> file containing a <a target='_blank' href='https://www.biocode.ltd/biocodekb-bioinformatics-knowledgeb/jukes-cantor-model'>Jukes-Cantor</a> neighbour-joining tree based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
     }
 
 	/* (non-Javadoc)
