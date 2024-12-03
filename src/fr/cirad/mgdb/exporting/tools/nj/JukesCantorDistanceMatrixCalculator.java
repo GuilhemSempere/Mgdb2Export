@@ -106,11 +106,12 @@ public class JukesCantorDistanceMatrixCalculator {
                     for (int j = i; j < sequences.length; j++) {
                         if (i != j) {
                             double distance = calculateJukesCantorDistance(sequences[i], sequences[j]);
+                            if (Double.isNaN(distance))
+                            	distance = 3;
+                            else if (distance > maxDistance)
+                                maxDistance = distance;
                             distanceMatrix[i][j] = distance;
                             distanceMatrix[j][i] = distance;
-                            if (distance > maxDistance) {
-                                maxDistance = distance;
-                            }
                             progress.setCurrentStepProgress((int) ((completedTasks.getAndIncrement() / (double) totalTasks) * 100));
                         }
                     	if (progress.getError() != null || progress.isAborted())
