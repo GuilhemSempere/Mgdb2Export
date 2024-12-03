@@ -210,7 +210,19 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	            }
 	
 	            double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
-	        	if (progress.getError() != null || progress.isAborted())
+
+//	            NumberFormat formatter = new DecimalFormat("#0.000000", new DecimalFormatSymbols(Locale.US)); 
+//	            FileWriter fw = new FileWriter("/tmp/gigwa_nj.dist");
+//	            fw.write("\t" + exportedIndividuals.size());
+//	            int k = 0;
+//	            for (double[] row : distanceMatrix) {
+//	            	fw.write("\n" + exportedIndividuals.get(k++) + " ");
+//	            	for (double cell : row)
+//	            		fw.write(formatter.format(cell) + " ");
+//	            }
+//	            fw.close();
+
+	            if (progress.getError() != null || progress.isAborted())
 	        		return;
 	            
 	            progress.moveToNextStep();
