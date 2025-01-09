@@ -41,7 +41,7 @@ import javax.ejb.ObjectNotFoundException;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
-import org.springframework.beans.factory.annotation.Autowired;
+
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -89,7 +89,6 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
     
-    @Autowired private AbstractTokenManager tokenManager;
     	
     protected boolean findDefaultRangeMinMax(MgdbDensityRequest gsvdr, String tmpCollName /* if null, main variant coll is used*/)
     {
@@ -160,7 +159,7 @@ public class VisualizationService {
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
 
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, tokenManager.readToken(gdr.getRequest()), false, false, false);
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
         long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
         if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
         {
@@ -287,7 +286,7 @@ public class VisualizationService {
         Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
         final BasicDBList variantQueryDBList = variantRunDataQueries.size() == 1 ? variantRunDataQueries.iterator().next() : new BasicDBList();
 
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, tokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -494,7 +493,7 @@ public class VisualizationService {
 		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
       
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, tokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -600,7 +599,7 @@ public class VisualizationService {
 		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
 
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, tokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -1206,15 +1205,15 @@ public class VisualizationService {
     }
 
 	public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr) throws Exception {
-		return selectionDensity(gdr, tokenManager.readToken(gdr.getRequest()));
+		return selectionDensity(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
 	}
 
 	public Map<Long, Double> selectionFst(MgdbDensityRequest gdr) throws Exception {
-		return selectionFst(gdr, tokenManager.readToken(gdr.getRequest()));
+		return selectionFst(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
 	}
 
 	public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr) throws Exception {
-		return selectionTajimaD(gdr, tokenManager.readToken(gdr.getRequest()));
+		return selectionTajimaD(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
 	}
 	
     public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token) throws Exception {
@@ -1230,7 +1229,7 @@ public class VisualizationService {
         ProgressIndicator.registerProgressIndicator(progress);
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, tokenManager.readToken(gvfpr.getRequest()), false, false, false);
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gvfpr.getRequest()), false, false, false);
         long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
         
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gvfpr, true);
@@ -1354,7 +1353,7 @@ public class VisualizationService {
     }
 
 	public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr) throws Exception {
-		return selectionVcfFieldPlotData(gvfpr, tokenManager.readToken(gvfpr.getRequest()));
+		return selectionVcfFieldPlotData(gvfpr, AbstractTokenManager.readToken(gvfpr.getRequest()));
 	}
 
 	public String igvData(MgdbDensityRequest gr, String token) throws Exception {
