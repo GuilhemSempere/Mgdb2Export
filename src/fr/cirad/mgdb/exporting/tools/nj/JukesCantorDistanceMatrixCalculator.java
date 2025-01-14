@@ -1,5 +1,6 @@
 package fr.cirad.mgdb.exporting.tools.nj;
 
+import java.util.List;
 import java.util.concurrent.RecursiveTask;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -15,8 +16,8 @@ public class JukesCantorDistanceMatrixCalculator {
     private static AtomicInteger completedTasks = new AtomicInteger(0);
     private static int totalTasks;
 
-    static public double[][] calculateDistanceMatrix(String[] sequences, ProgressIndicator progress) {
-        int n = sequences.length;
+    static public double[][] calculateDistanceMatrix(List<String> sequences, ProgressIndicator progress) {
+        int n = sequences.size();
         double[][] distanceMatrix = new double[n][n];
         int nProcessCount = Math.max(1, (int) Math.ceil(Runtime.getRuntime().availableProcessors() / 3));
         LOG.info("Launching calculateDistanceMatrix on " + nProcessCount + " thread(s)");
@@ -84,13 +85,13 @@ public class JukesCantorDistanceMatrixCalculator {
 
     static class DistanceCalculatorTask extends RecursiveTask<Double> {
         private static final int THRESHOLD = 10;
-        private final String[] sequences;
+        private final List<String> sequences;
         private final double[][] distanceMatrix;
         private final int start;
         private final int end;
         private final ProgressIndicator progress;
 
-        DistanceCalculatorTask(String[] sequences, double[][] distanceMatrix, int start, int end, ProgressIndicator progress) {
+        DistanceCalculatorTask(List<String> sequences, double[][] distanceMatrix, int start, int end, ProgressIndicator progress) {
             this.sequences = sequences;
             this.distanceMatrix = distanceMatrix;
             this.start = start;
@@ -103,9 +104,9 @@ public class JukesCantorDistanceMatrixCalculator {
             if (end - start <= THRESHOLD) {
                 double maxDistance = 0.0;
                 for (int i = start; i < end; i++) {
-                    for (int j = i; j < sequences.length; j++) {
+                    for (int j = i; j < sequences.size(); j++) {
                         if (i != j) {
-                            double distance = calculateJukesCantorDistance(sequences[i], sequences[j]);
+                            double distance = calculateJukesCantorDistance(sequences.get(i), sequences.get(j));
                             if (Double.isNaN(distance))
                             	distance = 3;
                             else if (distance > maxDistance)

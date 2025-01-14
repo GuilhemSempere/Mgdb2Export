@@ -20,6 +20,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
@@ -117,8 +118,8 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 
-        File tempFastaFile = File.createTempFile("fasta_for_jk__", "");
-        File warningFile = File.createTempFile("export_warnings_", "");	// save existing warnings into a temp file so we can append to it
+        // save existing warnings into a temp file so we can append to it
+        File warningFile = File.createTempFile("export_warnings_", "");
         try {
 	        FileOutputStream warningOS = new FileOutputStream(warningFile);
 	        for (File f : exportOutputs.getWarningFiles()) {
@@ -140,15 +141,26 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	        	try (Scanner scanner = new Scanner(indFile)) {
 	        		exportedIndividuals.add(scanner.nextLine());
 	        	}
-
-	        OutputStream fastaOS = new FileOutputStream(tempFastaFile);
+	        
+	    	OutputStream fastaOS = new OutputStream() {
+	    	    private StringBuilder string = new StringBuilder();
+	
+	    	    @Override
+	    	    public void write(int b) throws IOException {
+	    	        this.string.append((char) b );
+	    	    }
+	
+	    	    public String toString() {
+	    	        return this.string.toString();
+	    	    }
+	    	};
 	    	fastaOS.write(getHeaderlines(exportOutputs.getGenotypeFiles().length, (int) markerCount).getBytes());
 	        writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
 	        fastaOS.write(getFooterlines().getBytes());
-	        fastaOS.close();
 	
 	        progress.moveToNextStep();
-	        try (Scanner scanner = new Scanner(tempFastaFile)) {
+	        try (Scanner scanner = new Scanner(fastaOS.toString())) {
+	            List<String> sequenceNames = new ArrayList<>(), sequences = new ArrayList<>();
 	            LinkedHashMap<String, String> seqMap = new LinkedHashMap<>();
 	            
 	            String currentSequenceName = null;
@@ -167,14 +179,18 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	                            missingAlleleCount++;
 	                        if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
 	                        	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
-	                        else
+	                        else {
+		                        sequenceNames.add(currentSequenceName);
+		                        sequences.add(sequence);
 		                        seqMap.put(currentSequenceName, sequence);
+	                        }
 	                    }
 	                    currentSequenceName = line.substring(1);
 	                    currentSequence = new StringBuilder();
-	                } 
-	                else
-	                   	currentSequence.append(line);	// Sequence data line
+	                } else {
+	                    // Sequence data line
+	                   	currentSequence.append(line);
+	                }
 	            }
 	
 	            // Add the last sequence
@@ -186,11 +202,14 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	                    missingAlleleCount++;
 	                if (missingAlleleCount * 100 / sequence.length() > nMaxMissingDataPercentageForIndividuals)
 	                	missingDataWarnings.append("- Excluding individual " + currentSequenceName + " from NJ export, it has too much missing data: " + (missingAlleleCount * 100 / sequence.length()) + "%\n");
-	                else
+	                else {
+	                    sequenceNames.add(currentSequenceName);
+	                    sequences.add(sequence);
 	                    seqMap.put(currentSequenceName, sequence);
+	                }
 	            }
 	
-	            double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(seqMap.values().toArray(new String[seqMap.size()]), progress);
+	            double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
 
 //	            NumberFormat formatter = new DecimalFormat("#0.000000", new DecimalFormatSymbols(Locale.US)); 
 //	            FileWriter fw = new FileWriter("/tmp/gigwa_nj.dist");
@@ -217,7 +236,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	
 	    		StringBuffer sb = new StringBuffer(); 
 	
-	    		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(seqMap.keySet().toArray(new String[seqMap.size()]), intDistanceMatrix);
+	    		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
 	    		TreeNode[] nodes = tb.build();
 	//    		nodes[nodes.length-1].rootTreeAt("CR1062");
 	    		nodes[nodes.length-1].buildTreeString(sb);
@@ -268,7 +287,6 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	        zos.close();
 	    }
         finally {
-        	tempFastaFile.delete();
             warningFile.delete();
         }
 
