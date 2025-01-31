@@ -63,7 +63,6 @@ import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
-import fr.cirad.mgdb.model.mongo.subtypes.Run;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
@@ -88,61 +87,22 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 @Component
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
-    
-    	
-    protected boolean findDefaultRangeMinMax(MgdbDensityRequest gsvdr, String tmpCollName /* if null, main variant coll is used*/)
+
+    protected boolean findDefaultRangeMinMax(MgdbDensityRequest mdr, String tmpCollName /* if null, main variant coll is used*/)
     {
-    	if (gsvdr.getDisplayedRangeMin() != null && gsvdr.getDisplayedRangeMax() != null) {
+    	if (mdr.getDisplayedRangeMin() != null && mdr.getDisplayedRangeMax() != null) {
     		LOG.info("findDefaultRangeMinMax skipped because min-max values already set");
     		return true;	// nothing to do
     	}
 
-        String info[] = Helper.getInfoFromId(gsvdr.getVariantSetId(), 2);
-        String sModule = info[0];
-
-		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-		
-		BasicDBList matchAndList = new BasicDBList();
-		if (tmpCollName == null)
-			matchAndList.add(new BasicDBObject(VariantData.FIELDNAME_RUNS + "." + Run.FIELDNAME_PROJECT_ID, Integer.parseInt(info[1])));	
-		matchAndList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gsvdr.getDisplayedSequence()));
-        if ((gsvdr.getStart() != null && gsvdr.getStart() != -1) || (gsvdr.getEnd() != null && gsvdr.getEnd() != -1)) {
-            BasicDBObject posCrit = new BasicDBObject();
-            if (gsvdr.getStart() != null && gsvdr.getStart() != -1)
-                posCrit.put("$gte", gsvdr.getStart());
-            if (gsvdr.getEnd() != null && gsvdr.getEnd() != -1)
-                posCrit.put("$lte", gsvdr.getEnd());
-            matchAndList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, posCrit));
-        }
-		if (gsvdr.getDisplayedVariantType() != null)
-			matchAndList.add(new BasicDBObject(VariantData.FIELDNAME_TYPE, gsvdr.getDisplayedVariantType()));
-		BasicDBObject match = new BasicDBObject("$match", new BasicDBObject("$and", matchAndList));
-		
-		BasicDBObject limit = new BasicDBObject("$limit", 1);
-		String startFieldPath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-
-		MongoCollection<Document> usedVarColl = mongoTemplate.getCollection(tmpCollName == null ? mongoTemplate.getCollectionName(VariantData.class) : tmpCollName); 
-		if (gsvdr.getDisplayedRangeMin() == null) {
-			BasicDBObject sort = new BasicDBObject("$sort", new BasicDBObject(startFieldPath, 1));
-			MongoCursor<Document> cursor = usedVarColl.aggregate(Arrays.asList(match, sort, limit)).iterator();
-			if (!cursor.hasNext())
-				return false;	// no variant found matching filter
-
-			Document aggResult = (Document) cursor.next();
-			gsvdr.setDisplayedRangeMin((Long) Helper.readPossiblyNestedField(aggResult, startFieldPath, "; ", null));
-		}
-
-		if (gsvdr.getDisplayedRangeMax() == null) {
-			BasicDBObject sort = new BasicDBObject("$sort", new BasicDBObject(startFieldPath, -1));
-			MongoCursor<Document> cursor = usedVarColl.aggregate(Arrays.asList(match, sort, limit)).collation(IExportHandler.collationObj).iterator();
-			if (!cursor.hasNext())
-				return false;	// no variant found matching filter
-
-			Document aggResult = (Document) cursor.next();
-			gsvdr.setDisplayedRangeMax((Long) Helper.readPossiblyNestedField(aggResult, startFieldPath, "; ", null));
-		}
-		return true;
+        String info[] = Helper.getInfoFromId(mdr.getVariantSetId(), 2);
+    	Long[] minMaxFound = new Long[2];	// will be filled in by the method below
+    	boolean retVal = Helper.findDefaultRangeMinMax(info[0], Integer.parseInt(info[1]), tmpCollName, mdr.getDisplayedVariantType(), Arrays.asList(mdr.getDisplayedSequence()), mdr.getStart(), mdr.getEnd(), minMaxFound);
+    	
+    	mdr.setDisplayedRangeMin(minMaxFound[0]);
+    	mdr.setDisplayedRangeMax(minMaxFound[1]);
+  
+		return retVal;
 	}
     
     public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String token) throws Exception {
@@ -182,26 +142,17 @@ public class VisualizationService {
 
         final long rangeMin = gdr.getDisplayedRangeMin();
         final ProgressIndicator finalProgress = progress;
-        String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
         
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
-        for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++)
-        {
-            BasicDBList queryList = new BasicDBList();
-            queryList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence()));
-            if (gdr.getDisplayedVariantType() != null)
-                queryList.add(new BasicDBObject(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType()));
-            String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-            queryList.add(new BasicDBObject(startSitePath, new BasicDBObject("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize))));
-			queryList.add(new BasicDBObject(startSitePath, new BasicDBObject( "$lt", gdr.getDisplayedRangeMin() + ((i+1)*intervalSize))));
-            if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-                queryList.addAll(variantQueryDBList);
-            final long chunkIndex = i;
+        
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
+            final int chunkIndex = i;
 
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted()) {
-                        long partialCount = mongoTemplate.getCollection(usedVarCollName).countDocuments(new BasicDBObject("$and", queryList));
+                        long partialCount = mongoTemplate.getCollection(usedVarCollName).countDocuments(intervalQueries.get(chunkIndex));
                         nTotalTreatedVariantCount.addAndGet((int) partialCount);
                         result.put((long) (rangeMin + (chunkIndex*intervalSize)), partialCount);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
@@ -271,6 +222,29 @@ public class VisualizationService {
 			}
 		}
     }
+    
+    public List<BasicDBObject> getIntervalQueries(int nIntervalCount, Collection<String> sequences, String variantType, long rangeMin, long rangeMax, BasicDBList variantQueryDBListToMerge) {
+		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+		final int intervalSize = (int) Math.ceil(Math.max(1, ((rangeMax - rangeMin) / (nIntervalCount - 1))));
+
+		List<BasicDBObject> result = new ArrayList<>();
+		for (int i=0; i<nIntervalCount; i++) {
+			BasicDBObject initialMatchStage = new BasicDBObject();
+			if (sequences != null && !sequences.isEmpty())
+				initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", sequences));
+			if (variantType != null)
+				initialMatchStage.put(VariantData.FIELDNAME_TYPE, variantType);
+			BasicDBObject positionSettings = new BasicDBObject();
+			positionSettings.put("$gte", rangeMin + (i*intervalSize));
+			positionSettings.put(i < nIntervalCount - 1 ? "$lt" : "$lte", i < nIntervalCount - 1 ? rangeMin + ((i+1)*intervalSize) : rangeMax);
+			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
+			initialMatchStage.put(startSitePath, positionSettings);
+			if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
+				mergeVariantQueryDBList(initialMatchStage, variantQueryDBListToMerge);
+			result.add(initialMatchStage);
+		}
+		return result;
+    }
 
     public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token) throws Exception {
     	long before = System.currentTimeMillis();
@@ -313,24 +287,13 @@ public class VisualizationService {
 
 		ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
 		final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
 
             Thread t = new Thread() {
             	public void run() {
@@ -520,24 +483,13 @@ public class VisualizationService {
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
 
 			Thread t = new Thread() {
 				public void run() {
@@ -625,24 +577,13 @@ public class VisualizationService {
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
 			
 			Thread t = new Thread() {
 				public void run() {
@@ -976,9 +917,8 @@ public class VisualizationService {
         final int sampleSize = 2*selectedIndividuals.size();
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++) {
+        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-		}
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
         double a1 = 0, a2 = 0;
@@ -1113,9 +1053,8 @@ public class VisualizationService {
 
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++) {
+        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-		}
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
     	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
@@ -1270,27 +1209,14 @@ public class VisualizationService {
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
         
-        String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-		for (int i=0; i<gvfpr.getDisplayedRangeIntervalCount(); i++)
-		{
-			List<Criteria> crits = new ArrayList<Criteria>();
-			crits.add(Criteria.where(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE).is(gvfpr.getDisplayedSequence()));
-			if (gvfpr.getDisplayedVariantType() != null)
-				crits.add(Criteria.where(VariantData.FIELDNAME_TYPE).is(gvfpr.getDisplayedVariantType()));
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			crits.add(Criteria.where(startSitePath).gte(gvfpr.getDisplayedRangeMin() + (i*intervalSize)));
-			if (i < gvfpr.getDisplayedRangeIntervalCount() - 1)
-				crits.add(Criteria.where(startSitePath).lt(gvfpr.getDisplayedRangeMin() + ((i+1)*intervalSize)));
-			else
-				crits.add(Criteria.where(startSitePath).lte(gvfpr.getDisplayedRangeMax()));
-
-            final Query query = new Query(new Criteria().andOperator(crits.toArray(new Criteria[crits.size()])));
-            final long chunkIndex = i;
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
+            final int chunkIndex = i;
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted())
                     {
-                    	List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", query.getQueryObject(), String.class).into(new ArrayList<>());	// oddly, it is faster to run a pre-query than to use $lookup
+                    	List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", intervalQueries.get(chunkIndex), String.class).into(new ArrayList<>());	// oddly, it is faster to run a pre-query than to use $lookup
 	                    final ArrayList<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
             			BasicDBList matchList = new BasicDBList();
