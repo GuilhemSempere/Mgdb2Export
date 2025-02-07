@@ -47,10 +47,10 @@ public class VariantQueryBuilder
 {
     public static final Integer QUERY_IDS_CHUNK_SIZE = 100000;
 
-    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, /*List<String> externallySelectedSeqs, */boolean fForBrowsing) {
-        String info[] = Helper.getInfoFromId(gsvr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, /*List<String> externallySelectedSeqs, */boolean fForBrowsing) throws Exception {
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gsvr.getVariantSetId());
+        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+
         String actualSequenceSelection = gsvr.getReferenceName();
 //        if (actualSequenceSelection == null || actualSequenceSelection.length() == 0) {
 //            if (externallySelectedSeqs != null) {
@@ -63,7 +63,7 @@ public class VariantQueryBuilder
         List<String> selectedVariantIds = gsvr.getSelectedVariantIds().length() == 0 ? null : Arrays.asList(gsvr.getSelectedVariantIds().split(";"));
 
         Collection<BasicDBList> queries = new ArrayList<>();
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         BasicDBObject projectQueryForVar = null;
 		BasicDBObject projectQueryForVrd = null;
 
@@ -72,8 +72,8 @@ public class VariantQueryBuilder
             
             // Filter on project
             if (Helper.estimDocCount(mongoTemplate, GenotypingProject.class) != 1) {
-            	projectQueryForVar = new BasicDBObject(VariantData.FIELDNAME_RUNS + "." + Run.FIELDNAME_PROJECT_ID, projId);
-            	projectQueryForVrd = new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, projId);
+            	projectQueryForVar = new BasicDBObject(VariantData.FIELDNAME_RUNS + "." + Run.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs));
+            	projectQueryForVrd = new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs));
             }
             
             /* Step to match selected variant types */
@@ -93,7 +93,7 @@ public class VariantQueryBuilder
             /* Step to match variants by position */
             LinkedHashSet<BasicDBObject> posOrSet = new LinkedHashSet<>();
             ArrayList<String> leftBounds = new ArrayList<>() {{ add(refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE); }};
-            Collection<String> variantTypes = MgdbDao.getVariantTypes(MongoTemplateManager.get(sModule), projId);
+            Collection<String> variantTypes = MgdbDao.getVariantTypes(MongoTemplateManager.get(info[0]), projIDs);
             if (variantTypes.size() != 1 || !Type.SNP.toString().equals(variantTypes.iterator().next()))
             	leftBounds.add(refPosPath + "." + ReferencePosition.FIELDNAME_END_SITE);	// only add this part if the project contains non-SNP variants (otherwise it unnecessarily complexifies & slows down query execution)
             
@@ -107,7 +107,7 @@ public class VariantQueryBuilder
                 	posAndList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$lte", gsvr.getEnd())));
                 
                 /* match selected chromosomes */
-                if (selectedSequences != null && selectedSequences.size() > 0 && selectedSequences.size() != mongoTemplate.findById(projId, GenotypingProject.class).getContigs(Assembly.getThreadBoundAssembly()).size())
+                if (selectedSequences != null && selectedSequences.size() > 0)
                 	posAndList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", selectedSequences)));
                 
                 if (!posAndList.isEmpty())
