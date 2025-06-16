@@ -49,7 +49,7 @@ public class VariantQueryBuilder
 
     static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, /*List<String> externallySelectedSeqs, */boolean fForBrowsing) throws Exception {
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gsvr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
         String actualSequenceSelection = gsvr.getReferenceName();
 //        if (actualSequenceSelection == null || actualSequenceSelection.length() == 0) {

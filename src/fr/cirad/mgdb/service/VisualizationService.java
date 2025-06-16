@@ -94,7 +94,7 @@ public class VisualizationService {
     	}
 
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(mdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
         
     	Long[] minMaxFound = new Long[2];	// will be filled in by the method below
     	boolean retVal = Helper.findDefaultRangeMinMax(info[0], projIDs, tmpCollName, mdr.getDisplayedVariantType(), Arrays.asList(mdr.getDisplayedSequence()), mdr.getStart(), mdr.getEnd(), minMaxFound);
@@ -105,12 +105,12 @@ public class VisualizationService {
 		return retVal;
 	}
     
-    public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String token) throws Exception {
+    public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String processId) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
 
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence()});
+        ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence()});
         ProgressIndicator.registerProgressIndicator(progress);
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
@@ -126,11 +126,11 @@ public class VisualizationService {
             return null;
         }
 
-        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class), usedVarCollName = nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName();
+        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class) ;
         final ConcurrentHashMap<Long, Long> result = new ConcurrentHashMap<Long, Long>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
+            if (!findDefaultRangeMinMax(gdr, nTempVarCount == 0 ? null : tmpVarColl.getNamespace().getCollectionName())) {
 				progress.setError("selectionDensity: Unable to find default position range, make sure current results are in sync with interface filters.");
 				return result;
 			}
@@ -151,7 +151,7 @@ public class VisualizationService {
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted()) {
-                        long partialCount = mongoTemplate.getCollection(usedVarCollName).countDocuments(intervalQueries.get(chunkIndex));
+                        long partialCount = mongoTemplate.getCollection(nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName()).countDocuments(intervalQueries.get(chunkIndex));
                         nTotalTreatedVariantCount.addAndGet((int) partialCount);
                         result.put((long) (rangeMin + (chunkIndex*intervalSize)), partialCount);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
@@ -640,7 +640,7 @@ public class VisualizationService {
 
     private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<GenotypingSample>> individualToSampleListMap, boolean keepPosition) throws Exception {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
 
@@ -764,7 +764,7 @@ public class VisualizationService {
 //		System.err.println("Fst : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 		
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
     	List<Collection<String>> selectedIndividuals = new ArrayList<Collection<String>>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
@@ -888,7 +888,7 @@ public class VisualizationService {
 //		System.err.println("Tajima : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
     	List<String> selectedIndividuals = new ArrayList<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
@@ -1024,7 +1024,7 @@ public class VisualizationService {
 //		System.err.println("MAF : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
     	List<String> selectedIndividuals = new ArrayList<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
@@ -1033,6 +1033,12 @@ public class VisualizationService {
 
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
         individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, selectedIndividuals));
+        for (List<GenotypingSample> l : individualToSampleListMap.values()) {
+        	System.out.print("[");
+        	for (GenotypingSample gs : l)
+        		System.out.print("'$sp." + gs.getId() + ".gt',");
+        	System.out.print("],");
+        }
 
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
@@ -1126,7 +1132,7 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gvfpr.getVariantSetId(), 2);
-        Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
         ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating plot data for " + gvfpr.getVcfField() +  " field regarding " + (gvfpr.getDisplayedVariantType() != null ? gvfpr.getDisplayedVariantType() + " " : "") + "variants on sequence " + gvfpr.getDisplayedSequence()});
         ProgressIndicator.registerProgressIndicator(progress);
@@ -1254,7 +1260,7 @@ public class VisualizationService {
         String processId = "igvViz_" + token;
 		final ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Preparing data for visualization"});
 		ProgressIndicator.registerProgressIndicator(progress);
-		Integer[] projIDs = Arrays.stream(info[1].split(";")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+		Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
 		boolean fNoGenotypesRequested = gr.getAllCallSetIds().isEmpty() || (gr.getAllCallSetIds().size() == 1 && gr.getAllCallSetIds().get(0).isEmpty());
 		Collection<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() :  MgdbDao.getSamplesForProjects(info[0], projIDs, gr.getCallSetIds().stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toList()));
