@@ -724,7 +724,7 @@ public class VisualizationService {
     		BasicDBObject spObject = new BasicDBObject();
     		spObject.put("k", new BasicDBObject("$toString", "$" + GENOTYPE_DATA_S10_SAMPLEINDEX));
     		spObject.put("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))));
-    		variantGroup.put("sp", new BasicDBObject("$push", spObject));
+    		variantGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$push", spObject));
     		if (keepPosition)
     			variantGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", variantGroup));
@@ -737,6 +737,13 @@ public class VisualizationService {
 	    	groupRuns.put("_id", "$_id");
 	    	groupRuns.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
 	    	pipeline.add(new BasicDBObject("$group", groupRuns));
+		}
+    	
+		if (info[1].length() > 1) {	// multiple projects involved: merge genotypes into a single document per variant
+			BasicDBObject projectMergeGroup = new BasicDBObject();
+			projectMergeGroup.put("_id", new BasicDBObject(FST_S22_VARIANTID, "$_id." + FST_S22_VARIANTID));
+			projectMergeGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
+			pipeline.add(new BasicDBObject("$group", projectMergeGroup));
 		}
 
     	return pipeline;
@@ -1033,12 +1040,6 @@ public class VisualizationService {
 
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
         individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, selectedIndividuals));
-        for (List<GenotypingSample> l : individualToSampleListMap.values()) {
-        	System.out.print("[");
-        	for (GenotypingSample gs : l)
-        		System.out.print("'$sp." + gs.getId() + ".gt',");
-        	System.out.print("],");
-        }
 
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
