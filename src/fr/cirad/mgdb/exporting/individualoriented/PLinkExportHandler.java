@@ -18,6 +18,7 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
@@ -137,6 +138,10 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	        	try (Scanner scanner = new Scanner(indFile)) {
 	        		exportedIndividuals.add(scanner.nextLine());
 	        	}
+		        catch (Exception e) {
+		        	if (!(e instanceof NullPointerException || e instanceof IOException || e instanceof FileNotFoundException) || !progress.isAborted())
+		        		throw e;
+		        }
 	
 	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
 	        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + exportOutputs.getGenotypeFiles().length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
@@ -299,9 +304,10 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         finally
         {
         	for (File f : individualExportFiles)
-                if (!f.delete()) {
+                if (f != null && !f.delete()) {
                     f.deleteOnExit();
-                    LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
+                    if (!progress.isAborted())
+                    	LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
                 }
         }
     }

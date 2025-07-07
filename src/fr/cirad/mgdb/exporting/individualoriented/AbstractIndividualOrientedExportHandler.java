@@ -19,6 +19,7 @@ package fr.cirad.mgdb.exporting.individualoriented;
 import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -177,6 +178,10 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	        
     		hapMapExportThread.join();
 	        exportOutputs.get().setGenotypeFiles(indFiles);
+        }
+        catch (Exception e) {
+        	if (!(e instanceof IOException || e instanceof FileNotFoundException) || !progress.isAborted())
+        		throw e;
         }
 
 	 	if (!progress.isAborted())
