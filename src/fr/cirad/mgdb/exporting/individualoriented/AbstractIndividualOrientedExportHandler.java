@@ -41,13 +41,12 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
 import org.apache.log4j.Logger;
+import org.bson.Document;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.type.filter.AssignableTypeFilter;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
-
-import com.mongodb.BasicDBList;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandler;
@@ -112,7 +111,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @return a map providing one File per individual
 	 * @throws Exception the exception
 	 */
-	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String tmpVarCollName, BasicDBList variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, final ProgressIndicator progress) throws Exception
+	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String tmpVarCollName, Document variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, final ProgressIndicator progress) throws Exception
 	{
 		long before = System.currentTimeMillis();
 

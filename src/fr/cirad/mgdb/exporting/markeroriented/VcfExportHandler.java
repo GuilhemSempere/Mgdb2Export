@@ -17,7 +17,6 @@
 package fr.cirad.mgdb.exporting.markeroriented;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -162,7 +161,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         String refPosPathWithTrailingDot = Assembly.getVariantRefPosPath(nAssemblyId) + ".";
         
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        
+ 
         CustomVCFWriter writer = null;		
 		try {
 			List<String> distinctSequenceNames = new ArrayList<String>();
@@ -192,7 +191,9 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			SAMSequenceDictionary dict = createSAMSequenceDictionary(sModule, distinctSequenceNames);
 			writer = buildVariantContextWriter(zos, dict);
 			zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-			File[] warningFiles = writeGenotypeFile(sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, writer);
+			Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+
+			File[] warningFiles = writeGenotypeFile(sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, samplesToExport, sortedIndividuals, distinctSequenceNames, dict, writer);
 			zos.closeEntry();
 
 			IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
@@ -213,7 +214,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		}
     }
 		
-    public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
+    public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
 		

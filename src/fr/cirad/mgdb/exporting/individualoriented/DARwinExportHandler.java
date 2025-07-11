@@ -42,7 +42,6 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
-import com.mongodb.BasicDBObject;
 import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
@@ -136,12 +135,12 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
         short nProgress = 0, nPreviousProgress = 0;
 
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
         String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
     	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
-        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+        try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, nQueryChunkSize)) {
             while (markerCursor.hasNext()) {
                 Document exportVariant = markerCursor.next();
                 String markerId = (String) exportVariant.get("_id");
