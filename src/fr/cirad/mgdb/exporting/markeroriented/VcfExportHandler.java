@@ -150,13 +150,14 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
 
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
         
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
+        boolean workWithSamples = samplesToExport.stream().filter(sp -> sp.isDetached()).count() == samplesToExport.size();
+        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individuals.size(), workWithSamples);
         
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, "individual");
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
         
         String refPosPathWithTrailingDot = Assembly.getVariantRefPosPath(nAssemblyId) + ".";
         
@@ -228,9 +229,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			}
 		}
 		
-	    Map<String, Integer> individualPositions = new LinkedHashMap<>();
-        for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-            individualPositions.put(ind, individualPositions.size());
+		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samplesToExport);
 
 //			VariantContextWriterBuilder vcwb = new VariantContextWriterBuilder();
 //			vcwb.unsetOption(Options.INDEX_ON_THE_FLY);

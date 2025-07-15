@@ -1306,9 +1306,7 @@ public class VisualizationService {
 		StringBuffer sb = new StringBuffer();
         
 		if (fNoGenotypesRequested) {	// simplest case where we're not returning genotypes: querying on variants collection will be faster
-			Map<String, Integer> individualPositions = new LinkedHashMap<>();
-			for (String ind : samples.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-				individualPositions.put(ind, individualPositions.size());
+			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samples);
 
 			String header = "variant\talleles\tchrom\tpos";
 			sb.append(header);
@@ -1324,9 +1322,7 @@ public class VisualizationService {
 			}
 		}
 		else {
-			final Map<Integer, String> sampleIdToIndividualMap = new HashMap<>();
-			for (GenotypingSample gs : samples)
-				sampleIdToIndividualMap.put(gs.getId(), gs.getIndividual());
+			final Map<Integer, String> sampleIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 	
 		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();

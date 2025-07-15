@@ -114,7 +114,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 
@@ -133,7 +133,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 		    	}
 	        }
 	
-	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, exportOutputs);
 			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
 	        
 	        ArrayList<String> exportedIndividuals = new ArrayList<>();
@@ -242,7 +242,7 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 	    		nodes[nodes.length-1].buildTreeString(sb);
 	
 	        	
-	    		String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + seqMap.size() + "individuals";
+	    		String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
 	            zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
 	    		String treeString = sb.toString() + ";";
 	        	zos.write(treeString.getBytes());
@@ -279,9 +279,6 @@ public class JukesCantorNewickTreeExportHandler extends FastaPseudoAlignmentExpo
 		            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
 		            zos.closeEntry();
 		        }
-	        	
-	        	if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-	            	IExportHandler.addMetadataEntryIfAny(sModule + "__" + seqMap.size() + "individuals_metadata.tsv", sModule, sExportingUser, seqMap.keySet(), individualMetadataFieldsToExport, zos, "individual");
 	        }
 	        zos.finish();
 	        zos.close();
