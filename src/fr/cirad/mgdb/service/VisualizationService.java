@@ -25,7 +25,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -41,7 +40,6 @@ import javax.ejb.ObjectNotFoundException;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
-
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -68,7 +66,6 @@ import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.model.MgdbDensityRequest;
 import fr.cirad.model.MgdbVcfFieldPlotRequest;
-import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryBuilder;
@@ -246,7 +243,7 @@ public class VisualizationService {
 		return result;
     }
 
-    public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token) throws Exception {
+    public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
     	long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -283,7 +280,7 @@ public class VisualizationService {
 		final long rangeMin = gdr.getDisplayedRangeMin();
 		final ProgressIndicator finalProgress = progress;
 
-		List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
 
 		ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
 		final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
@@ -444,7 +441,7 @@ public class VisualizationService {
 		return new TreeMap<Long, Double>(result);
     }
     
-    public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr, String token) throws Exception {
+    public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -478,7 +475,7 @@ public class VisualizationService {
 				return new ArrayList<>();
 			}
 
-		List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
 
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
@@ -539,7 +536,7 @@ public class VisualizationService {
 		return Arrays.asList(new TreeMap<>(tajimaD), new TreeMap<>(segregatingSites));
 	}
     
-    public Map<Long, Float> selectionMaf(MgdbDensityRequest gdr, String token) throws Exception {
+    public Map<Long, Float> selectionMaf(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -572,7 +569,7 @@ public class VisualizationService {
 				return result;
 			}
 
-		List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
 		
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
@@ -774,7 +771,7 @@ public class VisualizationService {
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
-    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws ObjectNotFoundException {
 //		System.err.println("Fst : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 		
     	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -785,11 +782,13 @@ public class VisualizationService {
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
 			selectedIndividuals.add(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-
+        
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        for (Collection<String> group : selectedIndividuals) {
-        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, group));
-        }
+        for (Collection<String> group : selectedIndividuals)
+			if (!workWithSamples)
+	        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, group));
+	        else
+	        	individualToSampleListMap.putAll(MongoTemplateManager.get(sModule).find(new Query(Criteria.where("_id").in(group.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
 
     	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, false);
 
@@ -899,7 +898,7 @@ public class VisualizationService {
     private static final String TJD_RES_SEGREGATINGSITES = "sg";
     private static final String TJD_RES_TAJIMAD = "tjd";
 
-    private List<BasicDBObject> buildTajimaDQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildTajimaDQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws ObjectNotFoundException {
 //		System.err.println("Tajima : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
     	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -911,8 +910,11 @@ public class VisualizationService {
 		for (int i = 0; i < callsetIds.size(); i++)
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
+		TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
+		if (!workWithSamples)
+        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
+        else
+        	individualToSampleListMap.putAll(MongoTemplateManager.get(sModule).find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
 
         final int sampleSize = 2*selectedIndividuals.size();
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
@@ -1036,7 +1038,7 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private List<BasicDBObject> buildMafQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildMafQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws ObjectNotFoundException {
 //		System.err.println("MAF : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
     	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
@@ -1048,9 +1050,13 @@ public class VisualizationService {
 		for (int i = 0; i < callsetIds.size(); i++)
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
-
+		if (!workWithSamples)
+        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
+        else
+        	individualToSampleListMap.putAll(mongoTemplate.find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
+        
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
         for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
@@ -1059,7 +1065,6 @@ public class VisualizationService {
 
     	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
 
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         GenotypingProject genotypingProject = mongoTemplate.findById(Integer.valueOf(projId), GenotypingProject.class);
 
         boolean fIsMultiRunProject = genotypingProject.getRuns().size() > 1;
@@ -1143,17 +1148,17 @@ public class VisualizationService {
         return result;
     }
 
-	public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr) throws Exception {
-		return selectionDensity(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
-
-	public Map<Long, Double> selectionFst(MgdbDensityRequest gdr) throws Exception {
-		return selectionFst(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
-
-	public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr) throws Exception {
-		return selectionTajimaD(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
+//	public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr) throws Exception {
+//		return selectionDensity(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
+//	}
+//
+//	public Map<Long, Double> selectionFst(MgdbDensityRequest gdr) throws Exception {
+//		return selectionFst(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
+//	}
+//
+//	public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr) throws Exception {
+//		return selectionTajimaD(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
+//	}
 	
     public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token) throws Exception {
 //		System.err.println(gvfpr.getVcfField() + " : " + gvfpr.getAllCallSetIds().stream().map(t -> t.size()).toList());
