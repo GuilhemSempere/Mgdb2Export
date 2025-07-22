@@ -154,7 +154,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
         
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         boolean workWithSamples = samplesToExport.stream().filter(sp -> sp.isDetached()).count() == samplesToExport.size();
-        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individuals.size(), workWithSamples);
+        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, sortedIndividuals.size(), workWithSamples);
         
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
         	IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
