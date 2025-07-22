@@ -1287,23 +1287,30 @@ public class VisualizationService {
 		return selectionVcfFieldPlotData(gvfpr, AbstractTokenManager.readToken(gvfpr.getRequest()));
 	}
 
-	public String igvData(MgdbDensityRequest gr, String token) throws Exception {
+	public String igvData(MgdbDensityRequest mdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gr.getVariantSetId(), 2);
+        String info[] = Helper.getInfoFromId(mdr.getVariantSetId(), 2);
         
         String processId = "igvViz_" + token;
 		final ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Preparing data for visualization"});
 		ProgressIndicator.registerProgressIndicator(progress);
 		int projId = Integer.parseInt(info[1]);
-
-		boolean fNoGenotypesRequested = gr.getAllCallSetIds().isEmpty() || (gr.getAllCallSetIds().size() == 1 && gr.getAllCallSetIds().get(0).isEmpty());
-		Collection<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() :  MgdbDao.getSamplesForProject(info[0], projId, gr.getCallSetIds().stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toList()));
+		
+		List<List<String>> allCallsetIDs = mdr.getAllCallSetIds();
+		boolean fNoGenotypesRequested = allCallsetIDs.isEmpty() || (allCallsetIDs.size() == 1 && allCallsetIDs.get(0).isEmpty());
+		Collection materialToExport = mdr.getCallSetIds().stream().map(csi -> {
+				String id = csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR));
+				return workWithSamples ? Integer.parseInt(id) : id;
+			}).collect(Collectors.toList());
+		ArrayList<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() : (workWithSamples ? new ArrayList<>(MgdbDao.getSamplesByIDs(info[0], materialToExport, true).values()) : MgdbDao.getSamplesForProject(info[0], projId, materialToExport));
+		
+		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         MongoCollection<Document> tempVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], token, false, false, false);
         boolean fWorkingOnTempColl = tempVarColl.countDocuments() > 0;
         
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gr, true);
+        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(mdr, true);
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (!fWorkingOnTempColl ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
         
@@ -1327,30 +1334,31 @@ public class VisualizationService {
 			}
 		}
 		else {
+            if (workWithSamples)
+            	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
+            		sp.setDetached(true);
 			final Map<Integer, String> sampleIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 	
 		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();
-		    List<List<String>> callsetIds = gr.getAllCallSetIds();
-		    for (int i = 0; i < callsetIds.size(); i++) {
-		        individualsByPop.put(gr.getGroupName(i), callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projId) /* no selection means all selected */ : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-		        annotationFieldThresholdsByPop.put(gr.getGroupName(i), gr.getAnnotationFieldThresholds(i));
+		    for (int i = 0; i < allCallsetIDs.size(); i++) {
+		        individualsByPop.put(mdr.getGroupName(i), allCallsetIDs.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projId) /* no selection means all selected */ : allCallsetIDs.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+		        annotationFieldThresholdsByPop.put(mdr.getGroupName(i), mdr.getAnnotationFieldThresholds(i));
 		    }
-	
+		    
 			// count variants to display
-//			BasicDBList variantLevelQuery = !variantQueryDBList.isEmpty() ? variantQueryDBList : new BasicDBList();
 	    	List<BasicDBObject> countPipeline = new ArrayList<>();
 	        if (!variantQueryForTargetCollection.isEmpty())
 	        	countPipeline.add(new BasicDBObject("$match", variantQueryForTargetCollection));
 	    	countPipeline.add(new BasicDBObject("$count", "count"));
 	    	MongoCursor<Document> countCursor = (fWorkingOnTempColl ? collWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class))).aggregate(countPipeline, Document.class).collation(IExportHandler.collationObj).iterator();
-	
+
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
 			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
 			sb.append(baos.toString());
 			progress.markAsComplete();
-			LOG.debug("igvData processed range " + gr.getDisplayedSequence() + ":" + gr.getDisplayedRangeMin() + "-" + gr.getDisplayedRangeMax() + " for " + new HashSet<>(sampleIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
+			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(sampleIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
 		}
 		
 		return sb.toString();
