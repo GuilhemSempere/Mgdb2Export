@@ -125,10 +125,10 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 	        }
 	        
 	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-	        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
-	
+	        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+
 	        zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
-	        writeGenotypeFile(zos, nQueryChunkSize, varColl, varQuery, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
+	        writeGenotypeFile(zos, nQueryChunkSize, varColl, variantQueryForTargetCollection, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
 	    	zos.closeEntry();
 	
 	
@@ -141,7 +141,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 	
 	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, nQueryChunkSize)) {
 	            progress.addStep("Writing map file");
 	            progress.moveToNextStep();
 	            while (markerCursor.hasNext()) {
@@ -196,13 +196,13 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
         progress.setCurrentStepProgress((short) 100);
     }
 
-    public void writeGenotypeFile(OutputStream os, int nQueryChunkSize, MongoCollection<Document> varColl, BasicDBObject varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, OutputStream warningOS, ProgressIndicator progress) throws IOException, InterruptedException {
+    public void writeGenotypeFile(OutputStream os, int nQueryChunkSize, MongoCollection<Document> varColl, Document varQuery, Map<String, String> markerSynonyms, File[] individualExportFiles, OutputStream warningOS, ProgressIndicator progress) throws IOException, InterruptedException {
    		os.write(("# fjFile = GENOTYPE" + LINE_SEPARATOR).getBytes());
         
    		boolean fWorkingOnRuns = varColl.getNamespace().getCollectionName().equals(MongoTemplateManager.getMongoCollectionName(VariantRunData.class));
     	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
     	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-   		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+   		try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(varColl, varQuery, projectionAndSortDoc, nQueryChunkSize)) {
 	        while (markerCursor.hasNext()) {
 	            Document exportVariant = markerCursor.next();
 	            String markerId = (String) (fWorkingOnRuns ? Helper.readPossiblyNestedField(exportVariant, "_id." + VariantRunDataId.FIELDNAME_VARIANT_ID, ";", null) : exportVariant.get("_id"));

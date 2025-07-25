@@ -18,6 +18,7 @@ package fr.cirad.mgdb.exporting.individualoriented;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
@@ -41,7 +42,6 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
-import com.mongodb.BasicDBObject;
 import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
@@ -137,13 +137,17 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	        	try (Scanner scanner = new Scanner(indFile)) {
 	        		exportedIndividuals.add(scanner.nextLine());
 	        	}
+		        catch (Exception e) {
+		        	if (!(e instanceof NullPointerException || e instanceof IOException || e instanceof FileNotFoundException) || !progress.isAborted())
+		        		throw e;
+		        }
 	
 	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
 	        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + exportOutputs.getGenotypeFiles().length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
 	
 	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-	        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
-	
+	        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+	        
 	        zos.putNextEntry(new ZipEntry(exportName + ".ped"));
 	        writeGenotypeFile(zos, sModule, exportedIndividuals, individualPopulations, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
 	    	zos.closeEntry();
@@ -154,7 +158,7 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-			try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+			try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, nQueryChunkSize)) {
 	            progress.addStep("Writing map file");
 	            progress.moveToNextStep();
 		        while (markerCursor.hasNext()) {
@@ -299,9 +303,10 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
         finally
         {
         	for (File f : individualExportFiles)
-                if (!f.delete()) {
+                if (f != null && !f.delete()) {
                     f.deleteOnExit();
-                    LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
+                    if (!progress.isAborted())
+                    	LOG.info("Unable to delete tmp export file " + f.getAbsolutePath());
                 }
         }
     }

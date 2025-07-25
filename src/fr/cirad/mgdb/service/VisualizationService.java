@@ -1270,8 +1270,9 @@ public class VisualizationService {
         boolean fWorkingOnTempColl = tempVarColl.countDocuments() > 0;
         
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gr, true);
-        BasicDBList variantQueryDBList = (fWorkingOnTempColl ? varQueryWrapper.getBareQueries() : varQueryWrapper.getVariantDataQueries()).iterator().next();
-
+        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (!fWorkingOnTempColl ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+        
 		MongoCollection<Document> collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : mongoTemplate.getCollectionName(fNoGenotypesRequested ? VariantData.class : VariantRunData.class));
 		StringBuffer sb = new StringBuffer();
         
@@ -1286,7 +1287,7 @@ public class VisualizationService {
 	            sb.append("\t" + individual);
 	        sb.append("\n");
 
-			MongoCursor<VariantData> varIt = collWithPojoCodec.find(new BasicDBObject("$and", variantQueryDBList), VariantData.class).projection(new BasicDBObject(VariantData.FIELDNAME_KNOWN_ALLELES, 1).append(Assembly.getThreadBoundVariantRefPosPath(), 1)).iterator();
+			MongoCursor<VariantData> varIt = collWithPojoCodec.find(variantQueryForTargetCollection, VariantData.class).projection(new BasicDBObject(VariantData.FIELDNAME_KNOWN_ALLELES, 1).append(Assembly.getThreadBoundVariantRefPosPath(), 1)).iterator();
 			while (varIt.hasNext()) {
 				VariantData variant = varIt.next();
             	ReferencePosition rp = variant.getReferencePosition(Assembly.getThreadBoundAssembly());
@@ -1307,16 +1308,16 @@ public class VisualizationService {
 		    }
 	
 			// count variants to display
-			BasicDBList variantLevelQuery = !variantQueryDBList.isEmpty() ? variantQueryDBList : new BasicDBList();
+//			BasicDBList variantLevelQuery = !variantQueryDBList.isEmpty() ? variantQueryDBList : new BasicDBList();
 	    	List<BasicDBObject> countPipeline = new ArrayList<>();
-	        if (!variantLevelQuery.isEmpty())
-	        	countPipeline.add(new BasicDBObject("$match", new BasicDBObject("$and", variantLevelQuery)));
+	        if (!variantQueryForTargetCollection.isEmpty())
+	        	countPipeline.add(new BasicDBObject("$match", variantQueryForTargetCollection));
 	    	countPipeline.add(new BasicDBObject("$count", "count"));
 	    	MongoCursor<Document> countCursor = (fWorkingOnTempColl ? collWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class))).aggregate(countPipeline, Document.class).collation(IExportHandler.collationObj).iterator();
 	
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryDBList, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
+			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
 			sb.append(baos.toString());
 			progress.markAsComplete();
 			LOG.debug("igvData processed range " + gr.getDisplayedSequence() + ":" + gr.getDisplayedRangeMin() + "-" + gr.getDisplayedRangeMax() + " for " + new HashSet<>(sampleIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");

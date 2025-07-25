@@ -95,14 +95,14 @@ public class BEDExportHandler extends AbstractMarkerOrientedExportHandler
 		zos.putNextEntry(new ZipEntry(exportName + ".bed"));
 		
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-        BasicDBObject varQuery = !variantDataQueries.isEmpty() ? new BasicDBObject("$and", variantDataQueries.iterator().next()) : new BasicDBObject();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 		
 		short nProgress = 0, nPreviousProgress = 0;
 		int nQueryChunkSize = (int) Math.min(2000, markerCount), nLoadedMarkerCount = 0;
 		String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
     	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
     	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_END_SITE, 1);
-    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), tmpVarCollName != null ? new Document() : new Document(varQuery), projectionAndSortDoc, nQueryChunkSize)) {
+    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, nQueryChunkSize)) {
 			while (markerCursor.hasNext())
 			{
 				Document exportVariant = markerCursor.next();
