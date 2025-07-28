@@ -780,7 +780,7 @@ public class VisualizationService {
 
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
         for (Collection<String> group : selectedIndividuals) {
-        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, group));
+        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, group));
         }
 
     	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, false);
@@ -903,7 +903,7 @@ public class VisualizationService {
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, selectedIndividuals));
+        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
 
         final int sampleSize = 2*selectedIndividuals.size();
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
@@ -1039,7 +1039,7 @@ public class VisualizationService {
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, selectedIndividuals));
+        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
 
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
@@ -1170,7 +1170,7 @@ public class VisualizationService {
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         List<Integer>[] sampleIDsGroupedBySortedIndividuals = new List[selectedIndividuals.size()];
-        TreeMap<String, ArrayList<GenotypingSample>> samplesByIndividual = MgdbDao.getSamplesByIndividualForProject(info[0], projIDs, selectedIndividuals);
+        TreeMap<String, ArrayList<GenotypingSample>> samplesByIndividual = MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals);
         int k = 0;
         for (String ind : selectedIndividuals) {
         	sampleIDsGroupedBySortedIndividuals[k] = samplesByIndividual.get(ind).stream().map(sp -> sp.getId()).collect(Collectors.toList());
