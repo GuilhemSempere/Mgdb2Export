@@ -132,7 +132,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
         zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
 
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 		
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
@@ -148,7 +148,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         progress.setCurrentStepProgress((short) 100);
     }
     
-    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<Integer, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
+    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<String, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
 		

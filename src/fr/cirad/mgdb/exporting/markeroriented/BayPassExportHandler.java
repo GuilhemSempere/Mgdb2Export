@@ -129,7 +129,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
         	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
         
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
         List<String> samplePops = new ArrayList<>();
         Map<String, String> SampleToIndiPops = new LinkedHashMap<>();//<individual, population>
         zos.putNextEntry(new ZipEntry(exportName + ".popnames"));

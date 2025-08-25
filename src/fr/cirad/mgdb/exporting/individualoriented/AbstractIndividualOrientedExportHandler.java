@@ -126,7 +126,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 			indOS[i++].write((individual + LINE_SEPARATOR).getBytes());
 		}
 
-		final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+		final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 		PipedOutputStream pos = new PipedOutputStream();
 		AtomicReference<ExportOutputs> exportOutputs = new AtomicReference<>();
 		

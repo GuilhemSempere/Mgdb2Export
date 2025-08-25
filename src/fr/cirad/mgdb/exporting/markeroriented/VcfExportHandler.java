@@ -295,7 +295,7 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		header.setWriteEngineHeaders(fWriteEngineHeaders);
 		writer.writeHeader(header);
 
-		HashMap<Integer, Object /*phID*/> phasingIDsBySample = new HashMap<>();
+		HashMap<String, Object /*phID*/> phasingIDsBySample = new HashMap<>();
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {
 				if (markerRunsToWrite.isEmpty())

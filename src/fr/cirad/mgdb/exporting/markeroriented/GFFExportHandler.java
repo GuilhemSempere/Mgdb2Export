@@ -118,7 +118,7 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
         typeToOntology.put(Type.SYMBOLIC.toString(), "SO:0000109");
         typeToOntology.put(Type.MNP.toString(), "SO:0001059");
 
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 		

@@ -1137,8 +1137,8 @@ public class VisualizationService {
             int finalSample = Integer.MAX_VALUE;
             for (int k=0; k<individualSamples.size(); k++) {    // this loop is executed only once for single-run projects
                 GenotypingSample individualSample = individualSamples.get(k);
-                if (individualSample.getId() < finalSample)
-                	finalSample = individualSample.getId();
+//                if (individualSample.getId() < finalSample)
+//                	finalSample = individualSample.getId();
             }
 
             String pathToGT = finalSample + "." + SampleGenotype.FIELDNAME_GENOTYPECODE;
@@ -1203,7 +1203,7 @@ public class VisualizationService {
 		for (int i = 0; i < callsetIds.size(); i++)
 			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        List<Integer>[] sampleIDsGroupedBySortedIndividuals = new List[selectedIndividuals.size()];
+        List<String>[] sampleIDsGroupedBySortedIndividuals = new List[selectedIndividuals.size()];
         TreeMap<String, ArrayList<GenotypingSample>> samplesByIndividual = MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals);
         int k = 0;
         for (String ind : selectedIndividuals) {
@@ -1337,7 +1337,7 @@ public class VisualizationService {
             if (workWithSamples)
             	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
             		sp.setDetached(true);
-			final Map<Integer, String> sampleIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+			final Map<String, String> sampleIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 	
 		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();

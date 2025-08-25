@@ -161,7 +161,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
         	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
         
         zos.putNextEntry(new ZipEntry(exportName + ".eigenstratgeno"));
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
