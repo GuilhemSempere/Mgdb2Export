@@ -33,6 +33,8 @@ import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import fr.cirad.mgdb.model.mongo.maintypes.*;
+import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
@@ -45,10 +47,6 @@ import com.mongodb.BasicDBList;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
-import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
@@ -151,16 +149,16 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
     public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<String, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
-		
-		for (GenotypingSample sample : samplesToExport) {
-			if (projectId == null)
-				projectId = sample.getProjectId();
-			else if (projectId != sample.getProjectId())
-			{
-				projectId = 0;
-				break;	// more than one project are involved: no header will be written
-			}
-		}
+        List<CallSet> callsets = MgdbDao.getCallSetsFromSamples(sModule, samplesToExport.stream().map(GenotypingSample::getId).collect(Collectors.toSet()));
+        for (CallSet cs : callsets) {
+            if (projectId == null)
+                projectId = cs.getProjectId();
+            else if (projectId != cs.getProjectId())
+            {
+                projectId = 0;
+                break;	// more than one project are involved: no header will be written
+            }
+        }
 		
 		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samplesToExport);
 

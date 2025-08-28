@@ -37,6 +37,7 @@ import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import fr.cirad.mgdb.model.mongo.maintypes.*;
 import org.apache.log4j.Logger;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -50,14 +51,7 @@ import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
-import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
-import fr.cirad.mgdb.model.mongo.maintypes.Sequence;
-import fr.cirad.mgdb.model.mongo.maintypes.SequenceStats;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
@@ -218,17 +212,17 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
     public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
-		
-		for (GenotypingSample sample : samplesToExport) {
+        List<CallSet> callsets = MgdbDao.getCallSetsFromSamples(sModule, samplesToExport.stream().map(GenotypingSample::getId).collect(Collectors.toSet()));
+        for (CallSet cs : callsets) {
 			if (projectId == null)
-				projectId = sample.getProjectId();
-			else if (projectId != sample.getProjectId())
+				projectId = cs.getProjectId();
+			else if (projectId != cs.getProjectId())
 			{
 				projectId = 0;
 				break;	// more than one project are involved: no header will be written
 			}
 		}
-		
+
 		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samplesToExport);
 
 //			VariantContextWriterBuilder vcwb = new VariantContextWriterBuilder();
