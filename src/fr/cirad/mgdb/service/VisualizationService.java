@@ -1256,7 +1256,7 @@ public class VisualizationService {
 	public String igvData(MgdbDensityRequest gr, String token) throws Exception {
 		long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gr.getVariantSetId(), 2);
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gr.getVariantSetId());
         
         String processId = "igvViz_" + token;
 		final ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Preparing data for visualization"});
