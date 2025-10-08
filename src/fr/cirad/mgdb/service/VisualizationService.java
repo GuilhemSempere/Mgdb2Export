@@ -54,6 +54,7 @@ import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandle
 import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.CallSet;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
@@ -635,13 +636,13 @@ public class VisualizationService {
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
     private static final String GENOTYPE_DATA_S10_SAMPLEINDEX = "sx";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<GenotypingSample>> individualToSampleListMap, boolean keepPosition) throws Exception {
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<CallSet>> individualOrSampleToCallSetListMap, boolean keepPosition) throws Exception {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
 
-        boolean fGotMultiSampleIndividuals = (individualToSampleListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+        boolean fGotMultiSampleIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
 
     	List<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
@@ -770,26 +771,24 @@ public class VisualizationService {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<Collection<String>> selectedIndividuals = new ArrayList<Collection<String>>();
+    	List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
     	List<List<String>> ga4ghCallsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < ga4ghCallsetIds.size(); i++)
-			selectedIndividuals.add(ga4ghCallsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        for (Collection<String> group : selectedIndividuals)
+        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        for (Collection<String> group : selectedMaterial)
 			if (!workWithSamples)
-				individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, group));
-	        else {
-	        	// FIXME: not filtering on project IDs ?!?
-	        	individualToSampleListMap.putAll(MongoTemplateManager.get(info[0]).find(new Query(Criteria.where("_id").in(group.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
-	        }
+				individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, group));
+	        else 
+	        	individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, false);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false);
 
     	// Stage 14 : Get populations genotypes
     	BasicDBList populationGenotypes = new BasicDBList();
-    	for (Collection<String> group : selectedIndividuals) {
-    		populationGenotypes.add(getFullPathToGenotypes(group, individualToSampleListMap));
+    	for (Collection<String> group : selectedMaterial) {
+    		populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap));
     	}
 
     	BasicDBObject projectGenotypes = new BasicDBObject(FST_S14_POPULATIONGENOTYPES, populationGenotypes);
@@ -898,20 +897,30 @@ public class VisualizationService {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
     	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+//    	List<String> selectedIndividuals = new ArrayList<String>();
+//    	List<List<String>> callsetIds = gdr.getAllCallSetIds();
+//		for (int i = 0; i < callsetIds.size(); i++)
+//			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+//
+//		TreeMap<String, List<GenotypingSample>> individualOrSampleToCallSetListMap = new TreeMap<String, List<GenotypingSample>>();
+//		if (!workWithSamples)
+//			individualOrSampleToCallSetListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
+//        else {
+//        	// FIXME: not filtering on project IDs ?!?
+//        	individualOrSampleToCallSetListMap.putAll(MongoTemplateManager.get(info[0]).find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
+//        }
+    	List<String> selectedMaterial = new ArrayList<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-		TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
+        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
 		if (!workWithSamples)
-			individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
-        else {
-        	// FIXME: not filtering on project IDs ?!?
-        	individualToSampleListMap.putAll(MongoTemplateManager.get(info[0]).find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
-        }
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
 
-        final int sampleSize = 2*selectedIndividuals.size();
+        final int sampleSize = 2*selectedMaterial.size();
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
         for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
@@ -931,11 +940,11 @@ public class VisualizationService {
         double e1 = c1 / a1;
         double e2 = c2 / (a1*a1 + a2);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true);
     	String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
 
     	// Stage 14 : Get the genotypes needed
-    	BasicDBList genotypePaths = getFullPathToGenotypes(selectedIndividuals, individualToSampleListMap);
+    	BasicDBList genotypePaths = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap);
     	BasicDBObject genotypeProjection = new BasicDBObject();
     	genotypeProjection.put(refPosPath, 1);
     	genotypeProjection.put(TJD_S14_GENOTYPES, genotypePaths);
@@ -1039,49 +1048,47 @@ public class VisualizationService {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
     	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+    	List<String> selectedMaterial = new ArrayList<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
+        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
 		if (!workWithSamples)
-			individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
-		else {
-        	// FIXME: not filtering on project IDs ?!?
-        	individualToSampleListMap.putAll(mongoTemplate.find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
-        }       
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
         for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true);
 
         List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
         Integer[] ploidyLevels = genotypingProjects.stream().map(pj -> pj.getPloidyLevel()).distinct().toArray(Integer[]::new);
         if (ploidyLevels.length > 1)
         	throw new Exception("Inconsistent ploidy levels among projects " + info[1] + " in database " + info[0]);
 
-        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, getFullPathToGenotypes(selectedIndividuals, individualToSampleListMap));
+        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap));
         BasicDBObject in = new BasicDBObject();
         BasicDBObject subIn = new BasicDBObject();
     	
         BasicDBObject inObj = new BasicDBObject("$add", Arrays.asList(1, new BasicDBObject("$cmp", Arrays.asList("$$g", ploidyLevels[0] == 1 ? "1" : "0/1"))));
         in.put("a", new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", inObj))));
-        in.put("m", new BasicDBObject("$subtract", Arrays.asList(individualToSampleListMap.size(), new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$max", Arrays.asList(0, new BasicDBObject("$cmp", Arrays.asList("$$g", null))))))))));
+        in.put("m", new BasicDBObject("$subtract", Arrays.asList(individualOrSampleToCallSetListMap.size(), new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$max", Arrays.asList(0, new BasicDBObject("$cmp", Arrays.asList("$$g", null))))))))));
 
         BasicDBList condList = new BasicDBList(), divideList = new BasicDBList();
-        condList.add(new BasicDBObject("$eq", new Object[] {"$$m", individualToSampleListMap.size()}));
+        condList.add(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}));
         condList.add(null);
-        condList.add(new BasicDBObject("$subtract", new Object[] {individualToSampleListMap.size(), "$$m"}));
+        condList.add(new BasicDBObject("$subtract", new Object[] {individualOrSampleToCallSetListMap.size(), "$$m"}));
         divideList.add(new BasicDBObject("$multiply", new Object[] {"$$a", 50}));
         divideList.add(new BasicDBObject("$cond", condList));
 
         subIn.put("f", new BasicDBObject("$divide", divideList));
-        subIn.put("n", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", new Object[] {"$$m", individualToSampleListMap.size()}), 0, 1)));
+        subIn.put("n", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}), 0, 1)));
 
         BasicDBObject subVars = in;
         BasicDBObject subLet = new BasicDBObject("vars", subVars);
@@ -1104,21 +1111,21 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private BasicDBList getFullPathToGenotypes(Collection<String> selectedIndividuals, Map<String, List<GenotypingSample>> individualToSampleListMap){
+    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<CallSet>> individualOrSampleToCallSetListMap){
     	BasicDBList result = new BasicDBList();
-    	Iterator<String> indIt = selectedIndividuals.iterator();
+    	Iterator<String> indIt = selectedMaterial.iterator();
         while (indIt.hasNext()) {
-            String individual = indIt.next();
-            List<GenotypingSample> individualSamples = individualToSampleListMap.get(individual);
+            String individualOrSample = indIt.next();
+            List<CallSet> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
 
-            int finalSample = Integer.MAX_VALUE;
-            for (int k=0; k<individualSamples.size(); k++) {    // this loop is executed only once for single-run projects
-                GenotypingSample individualSample = individualSamples.get(k);
-//                if (individualSample.getId() < finalSample)
-//                	finalSample = individualSample.getId();
+            int callSetIdToUse = Integer.MAX_VALUE;
+            for (int k=0; k<callSets.size(); k++) {    // this loop is executed only once for single-run projects
+            	CallSet callset = callSets.get(k);
+                if (callset.getId() < callSetIdToUse)
+                	callSetIdToUse = callset.getId();
             }
 
-            String pathToGT = finalSample + "." + TJD_S18_GENOTYPE;
+            String pathToGT = callSetIdToUse + "." + TJD_S18_GENOTYPE;
             String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
             result.add(fullPathToGT);
         }
