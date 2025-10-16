@@ -135,8 +135,8 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 
 		// Run data reading in a thread so that we can immediately wait for the streamed output (avoids the need for a global temporary file)
 		Thread hapMapExportThread = new Thread(() -> {
-			Assembly.setThreadAssembly(nAssemblyID);
 		    try {
+				Assembly.setThreadAssembly(nAssemblyID);
 		        progress.addStep("Extracting genotypes");
 		        progress.moveToNextStep();
 
@@ -146,6 +146,8 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		    } catch (Exception e) {
 		        LOG.error("Error reading genotypes for export", e);
 		        progress.setError(e.getMessage());
+		    } finally {
+		        Assembly.cleanupThreadAssembly();
 		    }
 		});
 		hapMapExportThread.start();
