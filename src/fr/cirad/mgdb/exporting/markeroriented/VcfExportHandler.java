@@ -212,8 +212,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
     public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
-        List<CallSet> callsets = MgdbDao.getCallSetsFromSamples(sModule, samplesToExport.stream().map(GenotypingSample::getId).collect(Collectors.toSet()));
-        for (CallSet cs : callsets) {
+		List<CallSet> callsets = samplesToExport.stream().map(sp -> sp.getCallSets()).flatMap(Collection::stream).toList();
+		for (CallSet cs : callsets) {
 			if (projectId == null)
 				projectId = cs.getProjectId();
 			else if (projectId != cs.getProjectId())

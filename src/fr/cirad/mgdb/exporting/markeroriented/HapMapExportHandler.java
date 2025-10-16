@@ -149,7 +149,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
     public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<String, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
-        List<CallSet> callsets = MgdbDao.getCallSetsFromSamples(sModule, samplesToExport.stream().map(GenotypingSample::getId).collect(Collectors.toSet()));
+		List<CallSet> callsets = samplesToExport.stream().map(sp -> sp.getCallSets()).flatMap(Collection::stream).toList();
         for (CallSet cs : callsets) {
             if (projectId == null)
                 projectId = cs.getProjectId();

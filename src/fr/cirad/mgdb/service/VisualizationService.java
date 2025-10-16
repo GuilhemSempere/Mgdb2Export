@@ -1288,7 +1288,7 @@ public class VisualizationService {
 				return workWithSamples ? Integer.parseInt(id) : id;
 			}).collect(Collectors.toList());
 
-		ArrayList<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() : (workWithSamples ? new ArrayList<>(MgdbDao.getSamplesByIDs(info[0], materialToExport, true).values()) : MgdbDao.getSamplesForProjects(info[0], projIDs, materialToExport));
+		Collection<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() : (workWithSamples ? new ArrayList<>(MgdbDao.getSamplesByIDs(info[0], materialToExport, true).values()) : MgdbDao.getSamplesForProjects(info[0], projIDs, materialToExport));
 
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         MongoCollection<Document> tempVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], token, false, false, false);
