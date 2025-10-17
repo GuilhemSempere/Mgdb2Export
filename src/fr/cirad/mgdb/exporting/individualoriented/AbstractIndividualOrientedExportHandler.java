@@ -52,8 +52,8 @@ import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandle
 import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.CallSet;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -111,7 +111,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @return a map providing one File per individual
 	 * @throws Exception the exception
 	 */
-	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String sExportingUser, String tmpVarCollName, Document variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<CallSet> callSetsToExport, Collection<String> metadataFieldsToExport, final ProgressIndicator progress) throws Exception
+	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String sExportingUser, String tmpVarCollName, Document variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<Callset> callSetsToExport, Collection<String> metadataFieldsToExport, final ProgressIndicator progress) throws Exception
 	{
 		long before = System.currentTimeMillis();
 
@@ -129,7 +129,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		}
 
         final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
-        for (CallSet cs : callSetsToExport)
+        for (Callset cs : callSetsToExport)
         	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		PipedOutputStream pos = new PipedOutputStream();
 		AtomicReference<ExportOutputs> exportOutputs = new AtomicReference<>();

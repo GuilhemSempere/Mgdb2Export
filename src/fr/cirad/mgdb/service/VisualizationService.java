@@ -54,11 +54,11 @@ import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandle
 import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.CallSet;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
@@ -636,7 +636,7 @@ public class VisualizationService {
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
     private static final String GENOTYPE_DATA_S10_SAMPLEINDEX = "sx";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<CallSet>> individualOrSampleToCallSetListMap, boolean keepPosition) throws Exception {
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean keepPosition) throws Exception {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
@@ -776,7 +776,7 @@ public class VisualizationService {
 		for (int i = 0; i < ga4ghCallsetIds.size(); i++)
 			selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
         for (Collection<String> group : selectedMaterial)
 			if (!workWithSamples)
 				individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, group));
@@ -914,7 +914,7 @@ public class VisualizationService {
 		for (int i = 0; i < callsetIds.size(); i++)
 			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
 		if (!workWithSamples)
 			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
 		else 
@@ -1054,7 +1054,7 @@ public class VisualizationService {
 			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        TreeMap<String, List<CallSet>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
 		if (!workWithSamples)
 			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
 		else 
@@ -1111,16 +1111,16 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<CallSet>> individualOrSampleToCallSetListMap){
+    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap){
     	BasicDBList result = new BasicDBList();
     	Iterator<String> indIt = selectedMaterial.iterator();
         while (indIt.hasNext()) {
             String individualOrSample = indIt.next();
-            List<CallSet> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
+            List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
 
             int callSetIdToUse = Integer.MAX_VALUE;
             for (int k=0; k<callSets.size(); k++) {    // this loop is executed only once for single-run projects
-            	CallSet callset = callSets.get(k);
+            	Callset callset = callSets.get(k);
                 if (callset.getId() < callSetIdToUse)
                 	callSetIdToUse = callset.getId();
             }
@@ -1283,12 +1283,10 @@ public class VisualizationService {
 		List<List<String>> allCallsetIDs = mdr.getAllCallSetIds();
 		
 		boolean fNoGenotypesRequested = allCallsetIDs.isEmpty() || (allCallsetIDs.size() == 1 && allCallsetIDs.get(0).isEmpty());
-		Collection materialToExport = mdr.getCallSetIds().stream().map(csi -> {
-				String id = csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR));
-				return workWithSamples ? Integer.parseInt(id) : id;
-			}).collect(Collectors.toList());
-
-		Collection<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() : (workWithSamples ? new ArrayList<>(MgdbDao.getSamplesByIDs(info[0], materialToExport, true).values()) : MgdbDao.getSamplesForProjects(info[0], projIDs, materialToExport));
+		Collection materialToExport = mdr.getCallSetIds().stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toList());
+		List<Callset> callSetsToExport = workWithSamples 
+        		? ((Collection<ArrayList<Callset>>) MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, materialToExport).values()).stream().flatMap(Collection::stream).toList()
+        		: ((Collection<ArrayList<Callset>>) MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, materialToExport).values()).stream().flatMap(Collection::stream).toList();
 
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         MongoCollection<Document> tempVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], token, false, false, false);
@@ -1302,7 +1300,7 @@ public class VisualizationService {
 		StringBuffer sb = new StringBuffer();
         
 		if (fNoGenotypesRequested) {	// simplest case where we're not returning genotypes: querying on variants collection will be faster
-			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samples, workWithSamples);
+			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
 			String header = "variant\talleles\tchrom\tpos";
 			sb.append(header);
@@ -1318,12 +1316,12 @@ public class VisualizationService {
 			}
 		}
 		else {
-            if (workWithSamples)
-            	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
-            		sp.setDetached(true);
+//            if (workWithSamples)
+//            	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
+//            		sp.setDetached(true);
 //			final Map<Integer, String> callSetIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
 	        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
-	        for (CallSet cs : callSetsToExport)
+	        for (Callset cs : callSetsToExport)
 	        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
 	        
 		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
@@ -1343,7 +1341,7 @@ public class VisualizationService {
 
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, callSetIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
+			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, callSetsToExport);
 			sb.append(baos.toString());
 			progress.markAsComplete();
 			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(callSetIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
