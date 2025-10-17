@@ -52,6 +52,7 @@ import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandle
 import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.CallSet;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
@@ -102,18 +103,19 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @param markerCount number of variants to export
 	 * @param exportID the export id
 	 * @param individualsByPop List of the individuals in each group
+	 * @param workWithSamples if true export sample names, otherwise individual names
 	 * @param annotationFieldThresholds the annotation field thresholds for each group
-	 * @param samplesToExport
+	 * @param callSetsToExport
 	 * @param metadataFieldsToExport metadata fields to export for individuals
 	 * @param progress the progress
 	 * @return a map providing one File per individual
 	 * @throws Exception the exception
 	 */
-	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String sExportingUser, String tmpVarCollName, Document variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<GenotypingSample> samplesToExport, Collection<String> metadataFieldsToExport, final ProgressIndicator progress) throws Exception
+	public ExportOutputs createExportFiles(String sModule, Integer nAssemblyId, String sExportingUser, String tmpVarCollName, Document variantQuery, long markerCount, String exportID, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, List<CallSet> callSetsToExport, Collection<String> metadataFieldsToExport, final ProgressIndicator progress) throws Exception
 	{
 		long before = System.currentTimeMillis();
 
-		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samplesToExport);
+		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 		
 		File[] indFiles = new File[individualPositions.size()];
 		BufferedOutputStream[] indOS = new BufferedOutputStream[individualPositions.size()];
@@ -126,12 +128,14 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 			indOS[i++].write((individual + LINE_SEPARATOR).getBytes());
 		}
 
-		final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+        for (CallSet cs : callSetsToExport)
+        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		PipedOutputStream pos = new PipedOutputStream();
 		AtomicReference<ExportOutputs> exportOutputs = new AtomicReference<>();
 		
 		Integer nAssemblyID= Assembly.getThreadBoundAssembly();
-        boolean workWithSamples = samplesToExport.stream().filter(sp -> sp.isDetached()).count() == samplesToExport.size();
+//        boolean workWithSamples = callSetsToExport.stream().filter(sp -> sp.isDetached()).count() == callSetsToExport.size();
 
 		// Run data reading in a thread so that we can immediately wait for the streamed output (avoids the need for a global temporary file)
 		Thread hapMapExportThread = new Thread(() -> {
@@ -141,7 +145,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		        progress.moveToNextStep();
 
 		        HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyID)), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQuery, markerCount, null, samplesToExport));
+		        exportOutputs.set(heh.writeGenotypeFile(true, false, true, true, pos, sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyID)), Assembly.class), individualsByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQuery, markerCount, null, callSetsToExport));
 		        exportOutputs.get().setWorkWithSamples(workWithSamples);
 		    } catch (Exception e) {
 		        LOG.error("Error reading genotypes for export", e);

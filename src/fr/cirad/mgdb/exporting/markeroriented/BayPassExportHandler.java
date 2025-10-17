@@ -48,6 +48,7 @@ import com.mongodb.client.MongoCollection;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.CallSet;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
@@ -115,26 +116,28 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 	 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-    	Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samplesToExport);
-		Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individuals, false);
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<CallSet> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    	Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
+		Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individualsByPop, false);
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
 		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        boolean workWithSamples = samplesToExport.stream().filter(sp -> sp.isDetached()).count() == samplesToExport.size();
+//        boolean workWithSamples = callSetsToExport.stream().filter(sp -> sp.isDetached()).count() == callSetsToExport.size();
         String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individualPositions.size(), workWithSamples);
 
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
         	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
         
-        final Map<String, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+        for (CallSet cs : callSetsToExport)
+        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
         List<String> samplePops = new ArrayList<>();
         Map<String, String> SampleToIndiPops = new LinkedHashMap<>();//<individual, population>
         zos.putNextEntry(new ZipEntry(exportName + ".popnames"));
        
-        for (String individual : sampleIdToIndividualMap.values()) {
+        for (String individual : callSetIdToIndividualMap.values()) {
 			String pop = individualPops.get(individual);
 			if (pop == null)
 				pop = ".";
@@ -186,7 +189,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		                if (runsToWrite != null)
 		                	runsToWrite.forEach( run -> {
 		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-	                                String individualId = sampleIdToIndividualMap.get(sampleId);
+	                                String individualId = callSetIdToIndividualMap.get(sampleId);
 	                                Integer individualIndex = individualPositions.get(individualId);
 	                                if (individualIndex == null)
 	                                    continue;   // unwanted sample
@@ -194,7 +197,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
 		                            String gtCode = sampleGenotype.getCode();
 		                            
-									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals, annotationFieldThresholds))
+									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individualsByPop, annotationFieldThresholds))
 										continue;	// skip genotype
 									
 									if (individualGenotypes[individualIndex] == null)
@@ -274,7 +277,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 		Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
-		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQueryForTargetCollection, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQueryForTargetCollection, callSetsToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(zos);

@@ -1302,7 +1302,7 @@ public class VisualizationService {
 		StringBuffer sb = new StringBuffer();
         
 		if (fNoGenotypesRequested) {	// simplest case where we're not returning genotypes: querying on variants collection will be faster
-			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samples);
+			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(samples, workWithSamples);
 
 			String header = "variant\talleles\tchrom\tpos";
 			sb.append(header);
@@ -1321,8 +1321,11 @@ public class VisualizationService {
             if (workWithSamples)
             	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
             		sp.setDetached(true);
-			final Map<String, String> sampleIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
-	
+//			final Map<Integer, String> callSetIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+	        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+	        for (CallSet cs : callSetsToExport)
+	        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
+	        
 		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();
 		    List<List<String>> callsetIds = mdr.getAllCallSetIds();
@@ -1340,10 +1343,10 @@ public class VisualizationService {
 
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
+			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, callSetIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
 			sb.append(baos.toString());
 			progress.markAsComplete();
-			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(sampleIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
+			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(callSetIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
 		}
 		
 		return sb.toString();
