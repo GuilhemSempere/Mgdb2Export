@@ -290,7 +290,6 @@ public class VisualizationService {
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
 			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
-
             Thread t = new Thread() {
             	public void run() {
             		if (finalProgress.isAborted())
@@ -636,13 +635,11 @@ public class VisualizationService {
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
     private static final String GENOTYPE_DATA_S10_SAMPLEINDEX = "sx";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean keepPosition) throws Exception {
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals) throws Exception {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-
-        boolean fGotMultiSampleIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
 
     	List<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
@@ -665,7 +662,7 @@ public class VisualizationService {
 	    	pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S2_DATA + "._id." + VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs))));
     	}
 
-    	if (fGotMultiSampleIndividuals) {
+    	if (fGotMultiCallSetIndividuals) {
     		if (useTempColl) {
 	    		// Stage 5 : Convert samples to an array
 	    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
@@ -686,20 +683,35 @@ public class VisualizationService {
     		pipeline.add(new BasicDBObject("$project", spkeyval));
 
     		// Stage 8 : Lookup samples
-    		BasicDBObject sampleLookup = new BasicDBObject();
-    		sampleLookup.put("from", "samples");
-    		sampleLookup.put("localField", GENOTYPE_DATA_S7_SAMPLEID);
-    		sampleLookup.put("foreignField", "_id");
-    		sampleLookup.put("as", GENOTYPE_DATA_S8_SAMPLE);
+    		BasicDBObject sampleLookup = new BasicDBObject("from", mongoTemplate.getCollectionName(GenotypingSample.class))
+		        .append("let", new BasicDBObject("localSi", "$" + GENOTYPE_DATA_S7_SAMPLEID))
+		        .append("pipeline", Arrays.asList(
+		            // Stage 1: match where $$localSi is in cs._id
+		            new BasicDBObject("$match",
+		                new BasicDBObject("$expr",
+		                    new BasicDBObject("$in", Arrays.asList("$$localSi", "$" + GenotypingSample.FIELDNAME_CALLSETS + "._id"))
+		                )
+		            ),
+		            // Stage 2: unwind cs
+		            new BasicDBObject("$unwind", "$" + GenotypingSample.FIELDNAME_CALLSETS),
+		            // Stage 3: match exact cs._id
+		            new BasicDBObject("$match",
+		                new BasicDBObject("$expr",
+		                    new BasicDBObject("$eq", Arrays.asList("$" + GenotypingSample.FIELDNAME_CALLSETS + "._id", "$$localSi"))
+		                )
+		            ),
+		            // Stage 4: project cs and in
+		            new BasicDBObject("$project",
+		                new BasicDBObject("_id", 0)
+		                    .append(GenotypingSample.FIELDNAME_CALLSETS, 1)
+		                    .append(GenotypingSample.FIELDNAME_INDIVIDUAL, 1)
+		            )
+		        ))
+		        .append("as", GENOTYPE_DATA_S8_SAMPLE);
     		pipeline.add(new BasicDBObject("$lookup", sampleLookup));
-
+    		
     		// Stage 9 : Get first sample (shouldn't get more than one anyway)
-    		BasicDBObject firstSample = new BasicDBObject();
-    		firstSample.put(GENOTYPE_DATA_S7_GENOTYPE, 1);
-    		if (keepPosition)
-    			firstSample.put(GENOTYPE_DATA_S7_POSITION, 1);
-    		firstSample.put(GENOTYPE_DATA_S8_SAMPLE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + GENOTYPE_DATA_S8_SAMPLE, 0)));
-    		pipeline.add(new BasicDBObject("$project", firstSample));
+    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S8_SAMPLE, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S8_SAMPLE))));
 
     		// Stage 10 : Regroup individual runs
     		BasicDBObject individualGroup = new BasicDBObject();
@@ -708,7 +720,7 @@ public class VisualizationService {
     		individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_INDIVIDUAL);
     		individualGroup.put("_id", individualGroupId);
     		individualGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$addToSet", "$" + GENOTYPE_DATA_S7_GENOTYPE));
-    		individualGroup.put(GENOTYPE_DATA_S10_SAMPLEINDEX, new BasicDBObject("$min", "$" + GENOTYPE_DATA_S8_SAMPLE + "._id"));
+    		individualGroup.put(GENOTYPE_DATA_S10_SAMPLEINDEX, new BasicDBObject("$min", "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_CALLSETS + "._id"));
     		if (keepPosition)
     			individualGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", individualGroup));
@@ -718,9 +730,9 @@ public class VisualizationService {
 
     		// Stage 12 : Group back by variant
     		BasicDBObject variantGroup = new BasicDBObject();
-    		variantGroup.put("_id", "$_id." + GENOTYPE_DATA_S10_VARIANTID);
+    		variantGroup.put("_id", "$_id");
     		BasicDBObject spObject = new BasicDBObject();
-    		spObject.put("k", new BasicDBObject("$toString", "$" + GENOTYPE_DATA_S10_SAMPLEINDEX));
+    		spObject.put("k", new BasicDBObject("$toString", "$_id." + GENOTYPE_DATA_S10_INDIVIDUALID));
     		spObject.put("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))));
     		variantGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$push", spObject));
     		if (keepPosition)
@@ -783,12 +795,13 @@ public class VisualizationService {
 	        else 
 	        	individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals);
 
     	// Stage 14 : Get populations genotypes
     	BasicDBList populationGenotypes = new BasicDBList();
     	for (Collection<String> group : selectedMaterial) {
-    		populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap));
+    		populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
     	}
 
     	BasicDBObject projectGenotypes = new BasicDBObject(FST_S14_POPULATIONGENOTYPES, populationGenotypes);
@@ -940,11 +953,12 @@ public class VisualizationService {
         double e1 = c1 / a1;
         double e2 = c2 / (a1*a1 + a2);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
     	String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
 
     	// Stage 14 : Get the genotypes needed
-    	BasicDBList genotypePaths = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap);
+    	BasicDBList genotypePaths = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals);
     	BasicDBObject genotypeProjection = new BasicDBObject();
     	genotypeProjection.put(refPosPath, 1);
     	genotypeProjection.put(TJD_S14_GENOTYPES, genotypePaths);
@@ -1065,14 +1079,15 @@ public class VisualizationService {
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
 
         List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
         Integer[] ploidyLevels = genotypingProjects.stream().map(pj -> pj.getPloidyLevel()).distinct().toArray(Integer[]::new);
         if (ploidyLevels.length > 1)
         	throw new Exception("Inconsistent ploidy levels among projects " + info[1] + " in database " + info[0]);
 
-        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap));
+        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
         BasicDBObject in = new BasicDBObject();
         BasicDBObject subIn = new BasicDBObject();
     	
@@ -1111,21 +1126,22 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap){
+    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean fGotMultiCallSetIndividuals) {
     	BasicDBList result = new BasicDBList();
     	Iterator<String> indIt = selectedMaterial.iterator();
         while (indIt.hasNext()) {
-            String individualOrSample = indIt.next();
-            List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
-
-            int callSetIdToUse = Integer.MAX_VALUE;
-            for (int k=0; k<callSets.size(); k++) {    // this loop is executed only once for single-run projects
-            	Callset callset = callSets.get(k);
-                if (callset.getId() < callSetIdToUse)
-                	callSetIdToUse = callset.getId();
+            String individualOrSample = indIt.next(), materialRefToUse = null;
+            if (fGotMultiCallSetIndividuals)
+            	materialRefToUse = individualOrSample;
+            else {
+	            List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
+	            for (int k=0; k<callSets.size(); k++) {    // this loop is executed only once for single-run projects
+	            	Callset callset = callSets.get(k);
+	            	materialRefToUse = "" + callset.getId();
+	            	break;
+	            }
             }
-
-            String pathToGT = callSetIdToUse + "." + TJD_S18_GENOTYPE;
+            String pathToGT = materialRefToUse + "." + TJD_S18_GENOTYPE;
             String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
             result.add(fullPathToGT);
         }
