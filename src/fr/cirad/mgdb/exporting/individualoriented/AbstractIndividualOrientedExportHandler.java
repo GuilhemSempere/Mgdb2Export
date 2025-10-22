@@ -86,7 +86,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 	 * @param varQueryWrapper variant query wrapper
 	 * @param markerCount number of variants to export
 	 * @param markerSynonyms the marker synonyms
-	 * @param metadataPopField metadata field to use as population String (overriding "fixed" individual-population field if exists) 
+	 * @param individualPopulations map providing each individual's population 
 	 * @param readyToExportFiles the ready to export files
 	 * @throws Exception the exception
 	 */
