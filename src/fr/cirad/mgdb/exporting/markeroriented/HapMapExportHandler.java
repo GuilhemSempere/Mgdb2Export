@@ -28,13 +28,11 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import fr.cirad.mgdb.model.mongo.maintypes.*;
-import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
@@ -47,10 +45,14 @@ import com.mongodb.BasicDBList;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
+import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
+import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -118,16 +120,17 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
     }
 
     public void exportData(boolean fSkipHapmapColumns, boolean fWriteAllelesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-		List<String> materialNames = individualsByPop.values().stream().flatMap(Collection::stream).toList();
+    	TreeSet<String> indSet = new TreeSet<>(new AlphaNumericComparator<String>());
+		for (Callset cs : callSetsToExport)
+			indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-//        boolean workWithSamples = callSetsToExport.stream().filter(sp -> sp.isDetached()).count() == callSetsToExport.size();
-        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, materialNames.size(), workWithSamples);
+        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, indSet.size(), workWithSamples);
 
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + materialNames.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, materialNames, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + indSet.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, indSet, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
 
         zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
 
