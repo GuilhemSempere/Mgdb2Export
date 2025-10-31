@@ -155,7 +155,6 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 
     	Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
     	Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-//        boolean workWithSamples = callSetsToExport.stream().filter(sp -> sp.isDetached()).count() == callSetsToExport.size();
         String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individualPositions.size(), workWithSamples);
         
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())

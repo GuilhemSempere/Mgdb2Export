@@ -135,7 +135,6 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 		AtomicReference<ExportOutputs> exportOutputs = new AtomicReference<>();
 		
 		Integer nAssemblyID= Assembly.getThreadBoundAssembly();
-//        boolean workWithSamples = callSetsToExport.stream().filter(sp -> sp.isDetached()).count() == callSetsToExport.size();
 
 		// Run data reading in a thread so that we can immediately wait for the streamed output (avoids the need for a global temporary file)
 		Thread hapMapExportThread = new Thread(() -> {
