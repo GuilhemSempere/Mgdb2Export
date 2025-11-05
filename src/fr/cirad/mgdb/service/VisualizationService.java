@@ -786,7 +786,7 @@ public class VisualizationService {
     	List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
     	List<List<String>> ga4ghCallsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < ga4ghCallsetIds.size(); i++)
-			selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
         for (Collection<String> group : selectedMaterial)
@@ -910,22 +910,10 @@ public class VisualizationService {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
     	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-//    	List<String> selectedIndividuals = new ArrayList<String>();
-//    	List<List<String>> callsetIds = gdr.getAllCallSetIds();
-//		for (int i = 0; i < callsetIds.size(); i++)
-//			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-//
-//		TreeMap<String, List<GenotypingSample>> individualOrSampleToCallSetListMap = new TreeMap<String, List<GenotypingSample>>();
-//		if (!workWithSamples)
-//			individualOrSampleToCallSetListMap.putAll(MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals));
-//        else {
-//        	// FIXME: not filtering on project IDs ?!?
-//        	individualOrSampleToCallSetListMap.putAll(MongoTemplateManager.get(info[0]).find(new Query(Criteria.where("_id").in(selectedIndividuals.stream().map(id -> Integer.parseInt(id)).toList())), GenotypingSample.class).stream().collect(Collectors.toMap(sp -> sp.getId().toString(), sp -> Arrays.asList(sp))));
-//        }
-    	List<String> selectedMaterial = new ArrayList<String>();
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
 		if (!workWithSamples)
@@ -1062,10 +1050,10 @@ public class VisualizationService {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
     	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<String> selectedMaterial = new ArrayList<String>();
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
@@ -1148,19 +1136,7 @@ public class VisualizationService {
         return result;
     }
 
-//	public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr) throws Exception {
-//		return selectionDensity(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-//	}
-//
-//	public Map<Long, Double> selectionFst(MgdbDensityRequest gdr) throws Exception {
-//		return selectionFst(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-//	}
-//
-//	public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr) throws Exception {
-//		return selectionTajimaD(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-//	}
-	
-    public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token) throws Exception {
+    public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token, boolean workWithSamples) throws Exception {
 //		System.err.println(gvfpr.getVcfField() + " : " + gvfpr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
         long before = System.currentTimeMillis();
@@ -1197,18 +1173,17 @@ public class VisualizationService {
 		final long rangeMin = gvfpr.getDisplayedRangeMin();
 		final ProgressIndicator finalProgress = progress;
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+		
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gvfpr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projIDs) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        List<String>[] sampleIDsGroupedBySortedIndividuals = new List[selectedIndividuals.size()];
-        TreeMap<String, ArrayList<GenotypingSample>> samplesByIndividual = MgdbDao.getSamplesByIndividualForProjects(info[0], projIDs, selectedIndividuals);
-        int k = 0;
-        for (String ind : selectedIndividuals) {
-        	sampleIDsGroupedBySortedIndividuals[k] = samplesByIndividual.get(ind).stream().map(sp -> sp.getId()).collect(Collectors.toList());
-            k++;
-		}
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+		if (!workWithSamples)
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
@@ -1231,7 +1206,7 @@ public class VisualizationService {
 
                         BasicDBObject projectStage = new BasicDBObject("$project", new BasicDBObject("r", new BasicDBObject("$let", new BasicDBObject()
                         	    .append("vars", new BasicDBObject("values", new BasicDBObject("$filter", new BasicDBObject()
-                                        .append("input", Arrays.stream(sampleIDsGroupedBySortedIndividuals).flatMap(List::stream).map(spId -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + spId + "." + SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField()).toArray())
+                                        .append("input", individualOrSampleToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + cs.getId() + "." + SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField()).toArray())
                                         .append("as", "val")
                                         .append("cond", new BasicDBObject("$ne", Arrays.asList("$$val", null)))
                         	    	)))
@@ -1281,10 +1256,6 @@ public class VisualizationService {
 
         return new TreeMap<Long, Integer>(result);
     }
-
-	public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr) throws Exception {
-		return selectionVcfFieldPlotData(gvfpr, AbstractTokenManager.readToken(gvfpr.getRequest()));
-	}
 
 	public String igvData(MgdbDensityRequest mdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
