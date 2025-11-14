@@ -4,26 +4,19 @@ import java.util.List;
 import java.util.concurrent.atomic.LongAdder;
 import java.util.stream.IntStream;
 
-import org.apache.log4j.Logger;
-
 import fr.cirad.tools.ProgressIndicator;
 
 public class JukesCantorDistanceMatrixCalculator {
 
-    private static final Logger LOG = Logger.getLogger(JukesCantorDistanceMatrixCalculator.class);
-
     public static double[][] calculateDistanceMatrix(List<String> sequences, ProgressIndicator progress) {
         final int n = sequences.size();
-        final int seqLen = sequences.get(0).length();   // required to be final
+        final int seqLen = sequences.get(0).length();
 
         double[][] distanceMatrix = new double[n][n];
 
         // Progress counters
         final LongAdder completed = new LongAdder();
         final long totalTasks = (long) n * (n - 1) / 2;
-
-        LOG.info("Launching calculateDistanceMatrix on "
-                 + Runtime.getRuntime().availableProcessors() + " thread(s)");
 
         // Parallel row computation
         double maxDist = IntStream.range(0, n).parallel().mapToDouble(i -> {
@@ -50,8 +43,7 @@ public class JukesCantorDistanceMatrixCalculator {
                     localMax = dist;
 
                 completed.increment();
-                progress.setCurrentStepProgress(
-                    (int) ((completed.sum() / (double) totalTasks) * 100)
+                progress.setCurrentStepProgress( (int) ((completed.sum() / (double) totalTasks) * 100)
                 );
             }
 
