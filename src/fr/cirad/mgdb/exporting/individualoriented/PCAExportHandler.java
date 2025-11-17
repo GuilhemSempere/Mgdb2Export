@@ -28,14 +28,14 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
+import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.log4j.Logger;
+import org.bson.Document;
 import org.ejml.data.FMatrixRMaj;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -46,9 +46,11 @@ import com.mongodb.BasicDBList;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
-import fr.cirad.mgdb.exporting.tools.pca.ParallelPCACalculator;
+import fr.cirad.mgdb.exporting.tools.pca.PCACalculator;
+import fr.cirad.mgdb.exporting.tools.pca.PCACalculator.FloatPCAResult;
+import fr.cirad.mgdb.exporting.tools.pca.PCACalculator.OptimizedDiskFloatMatrix;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.ExperimentalFeature;
 import fr.cirad.tools.ProgressIndicator;
@@ -91,7 +93,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zipped PCA based on an Eigenstrat format export. Variants with more than 50% missing data are automatically excluded.";
+    	return "Exports a zipped PCA based on an <a target='_blank' href='https://github.com/argriffing/eigensoft/blob/master/CONVERTF/README'>Eigenstrat</a> format export. Variants with more than 50% missing data are automatically excluded. THIS IS AN EXPERIMENTAL FEATURE!";
     }
 
 	/* (non-Javadoc)
@@ -108,9 +110,12 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-		List<String> sortedIndividuals = samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList());
-
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    	TreeSet<String> indSet = new TreeSet<>(new AlphaNumericComparator<String>());
+		for (Callset cs : callSetsToExport)
+			indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
+		List<String> sortedIndividuals = new ArrayList<>(indSet);
+		
 	    // Check if there is enough memory
 //		System.gc();
 //	    Runtime runtime = Runtime.getRuntime();
@@ -120,27 +125,13 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 //	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
         
+		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
-//      FIXME: remove me (only for testing)
-        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
-        	if (!IExportHandler.addMetadataEntryIfAny(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv", sModule, sExportingUser, sortedIndividuals, individualMetadataFieldsToExport, zos, "individual")) {
-		    	zos.putNextEntry(new ZipEntry(sModule + "__" + sortedIndividuals.size() + "individuals_metadata.tsv"));
-		    	zos.write("individual\tpopulation".getBytes());
-		    	for (String ind : sortedIndividuals) {
-		    		zos.write(("\n" + ind + "\t" + ind.split("_")[0]).getBytes());
-		    	}
-		    	zos.closeEntry();
-	        }
-        }
-        
-        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-
-		Map<String, Integer> individualPositions = new LinkedHashMap<>();
-		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-			individualPositions.put(ind, individualPositions.size());
+        Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
         if (progress.isAborted())
             return;
@@ -149,7 +140,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
         File warningFile = File.createTempFile("export_warnings_", ""); // save existing warnings into a temp file so we can append to it
         try {
     		OutputStream eigenstratGenoOS = new FileOutputStream(tempEigenstratFile);   	
-            ExportOutputs exportOutputs = writeGenotypeFile(eigenstratGenoOS, sModule, nAssemblyId, individuals, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport, individualPositions);
+    	    ExportOutputs exportOutputs = writeGenotypeFile(eigenstratGenoOS, sModule, nAssemblyId, workWithSamples, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport, individualsByPop);
             eigenstratGenoOS.close();
 
 	        FileOutputStream warningOS = new FileOutputStream(warningFile);
@@ -162,53 +153,82 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 		            in.close();
 			    	f.delete();
 		    	}
-	        }
+	        }	        
+	        
+//	    	long before = System.currentTimeMillis();
 
             progress.moveToNextStep();
-            ParallelPCACalculator pcaCalc = new ParallelPCACalculator();            
-            float[][] data = pcaCalc.readAndTransposeEigenstratGenoString(new BufferedInputStream(new FileInputStream(tempEigenstratFile)), warningOS, progress, (int) markerCount);
+            
+			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + sortedIndividuals.size() + "individuals";
+	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+	        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + indSet.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, indSet, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
+ 
+	        PCACalculator pcaCalc = new PCACalculator();            
+            OptimizedDiskFloatMatrix diskMatrix = pcaCalc.readAndTransposeDirectToDisk(new BufferedInputStream(new FileInputStream(tempEigenstratFile)), warningOS, progress, (int) markerCount);
 
-	        if (progress.isAborted())
-	            return;
-	        
-            progress.moveToNextStep();
-            data = pcaCalc.imputeMissingValues(data);
-	        if (progress.isAborted())
-	            return;
-	        
-            progress.moveToNextStep();
-            data = pcaCalc.centerAndScaleData(data);
-	        if (progress.isAborted())
-	            return;
-	        
-	        progress.moveToNextStep();
+            if (progress.isAborted() || progress.getError() != null) {
+                diskMatrix.close();
+                return;
+            }
 
-//	        // compute with doubles
-//	        double[][] doubleData = new double[data.length][data.length == 0 ? 0 : data[0].length];
-//	        for (int i = 0; i < data.length; i++)
-//	            for (int j = 0; j < (data.length == 0 ? 0 : data[0].length); j++)
-//	                doubleData[i][j] = (double) data[i][j];
-//	        ParallelPCACalculator.PCAResult pcaResult = pcaCalc.performPCA(doubleData);
-//	        DoubleMatrix2D eigenVectors = pcaResult.getEigenVectors();
-//	        double[][] dataMatrix = pcaCalc.transformData(doubleData, eigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
-//	        double[] eigenValues = pcaResult.getEigenValues();
-	        
-	        // compute with floats
-	        ParallelPCACalculator.FloatPCAResult floatPcaResult = pcaCalc.performPCA_float_disk(data);
-	        FMatrixRMaj floatEigenVectors = floatPcaResult.getEigenVectors();
-	        float[][] dataMatrix = pcaCalc.transformData(data, floatEigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
-	        float[] eigenValues = floatPcaResult.getEigenValues();
-	        
-			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + dataMatrix[0].length + "variants__" + sortedIndividuals.size() + "individuals";
-	        zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-	        zos.write("#eigvals:".getBytes());
-	    	for (int c=0; c<eigenValues.length; c++)
-	    		zos.write(("\t" + eigenValues[c]).getBytes());
-	        for (int r=0; r<sortedIndividuals.size(); r++) {
-	        	zos.write(("\n" + sortedIndividuals.get(r)).getBytes());
-	        	for (int c=0; c<dataMatrix[r].length; c++)
-	        		zos.write(("\t" + dataMatrix[r][c]).getBytes());
-	        }
+            progress.moveToNextStep();
+            pcaCalc.imputeMissingDataOnDisk(diskMatrix);
+            if (progress.isAborted() || progress.getError() != null) {
+                diskMatrix.close();
+                return;
+            }
+
+            progress.moveToNextStep();
+            pcaCalc.centerAndScaleDataOnDisk(diskMatrix);
+            if (progress.isAborted() || progress.getError() != null) {
+                diskMatrix.close();
+                return;
+            }
+
+            progress.moveToNextStep();
+            
+//            ExecutorService exec = Executors.newSingleThreadExecutor();
+//            Future<OptimizedParallelPCACalculator.FloatPCAResult> future = pcaCalc.performSmartSVDWithProgressAsync(diskMatrix, null, warningOS, progress, exec);
+//            FloatPCAResult floatPcaResult = future.get();
+            FloatPCAResult floatPcaResult = pcaCalc.performSmartSVD(diskMatrix, null, warningOS);
+            FMatrixRMaj floatEigenVectors = floatPcaResult.getEigenVectors();
+
+            float[][] transformedData = pcaCalc.transformDataStreaming(diskMatrix, floatEigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
+            float[] eigenValues = floatPcaResult.getEigenValues();
+            
+//	        LOG.debug("pca calculation took " + (System.currentTimeMillis() - before) / 1000d + "s");
+
+            // Write results with memory efficiency
+            zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
+
+            // Write eigenvalues header
+            StringBuilder eigenHeader = new StringBuilder("#eigvals:");
+            for (int c = 0; c < eigenValues.length; c++) {
+                eigenHeader.append("\t").append(eigenValues[c]);
+            }
+            zos.write(eigenHeader.toString().getBytes());
+
+            // Write data rows efficiently
+            for (int r = 0; r < sortedIndividuals.size(); r++) {
+                StringBuilder rowBuilder = new StringBuilder();
+                rowBuilder.append("\n").append(sortedIndividuals.get(r));
+                
+                for (int c = 0; c < transformedData[r].length; c++)
+                    rowBuilder.append("\t").append(transformedData[r][c]);
+                
+                zos.write(rowBuilder.toString().getBytes());
+                
+                // Help GC for very large datasets
+                if (sortedIndividuals.size() > 10000 && r % 5000 == 0) {
+                    transformedData[r] = null;
+                    System.gc();
+                }
+            }
+
+            zos.closeEntry();
+            diskMatrix.close();
+            transformedData = null;
+            System.gc();
 
 	        warningOS.close();
 	        if (warningFile.length() > 0) {

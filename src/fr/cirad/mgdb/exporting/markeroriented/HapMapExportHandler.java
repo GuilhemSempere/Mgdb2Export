@@ -28,13 +28,14 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
+import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -45,10 +46,10 @@ import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.tools.AlphaNumericComparator;
@@ -114,31 +115,33 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 	}
 	
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-    	exportData(false, false, false, false, outputStream, sModule, nAssemblyId, sExportingUser, progress, tmpVarCollName, varQueryWrapper, markerCount, markerSynonyms, individuals, annotationFieldThresholds, samplesToExport, individualMetadataFieldsToExport, readyToExportFiles);
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    	exportData(false, false, false, false, outputStream, sModule, nAssemblyId, sExportingUser, progress, tmpVarCollName, varQueryWrapper, markerCount, markerSynonyms, individualsByPop, workWithSamples, annotationFieldThresholds, callSetsToExport, individualMetadataFieldsToExport, readyToExportFiles);
     }
 
-    public void exportData(boolean fSkipHapmapColumns, boolean fWriteAllelesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-		Map<String, Integer> individualPositions = new LinkedHashMap<>();
-		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-			individualPositions.put(ind, individualPositions.size());
+    public void exportData(boolean fSkipHapmapColumns, boolean fWriteAllelesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+    	TreeSet<String> indSet = new TreeSet<>(new AlphaNumericComparator<String>());
+		for (Callset cs : callSetsToExport)
+			indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
         Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualPositions.size() + "individuals";
+        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, indSet.size(), workWithSamples);
 
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + "individuals_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, "individual");
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + indSet.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, indSet, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
 
         zos.putNextEntry(new ZipEntry(exportName + ".hapmap"));
 
+        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+        for (Callset cs : callSetsToExport)
+        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
+        
+        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
-		
-		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-	
-		File[] warningFiles = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individuals, sampleIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, !variantDataQueries.isEmpty() ? variantDataQueries.iterator().next() : new BasicDBList(), markerCount, markerSynonyms, samplesToExport).getWarningFiles();
+		File[] warningFiles = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individualsByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport).getWarningFiles();
 		
         zos.closeEntry();
         
@@ -149,23 +152,20 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         progress.setCurrentStepProgress((short) 100);
     }
     
-    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individuals, Map<Integer, String> sampleIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, BasicDBList variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<GenotypingSample> samplesToExport) throws Exception {
+    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<Integer, String> callSetIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Integer projectId = null;
+        for (Callset cs : callSetsToExport) {
+            if (projectId == null)
+                projectId = cs.getProjectId();
+            else if (projectId != cs.getProjectId())
+            {
+                projectId = 0;
+                break;	// more than one project are involved: no header will be written
+            }
+        }
 		
-		for (GenotypingSample sample : samplesToExport) {
-			if (projectId == null)
-				projectId = sample.getProjectId();
-			else if (projectId != sample.getProjectId())
-			{
-				projectId = 0;
-				break;	// more than one project are involved: no header will be written
-			}
-		}
-		
-	    Map<String, Integer> individualPositions = new LinkedHashMap<>();
-        for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-            individualPositions.put(ind, individualPositions.size());
+		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
         os.write(((fSkipHapmapColumns ? "variant" : "rs#") + "\talleles\tchrom\tpos" + (fSkipHapmapColumns ? "" : "\tstrand\tassembly#\tcenter\tprotLSID\tassayLSID\tpanelLSID\tQCcode")).getBytes());
         for (String individual : individualPositions.keySet()) {
@@ -205,16 +205,16 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		                if (runsToWrite != null)
 		                	runsToWrite.forEach( run -> {
-		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-	                                String individualId = sampleIdToIndividualMap.get(sampleId);
+		                    	for (Integer callSetId : run.getSampleGenotypes().keySet()) {
+	                                String individualId = callSetIdToIndividualMap.get(callSetId);
 	                                Integer individualIndex = individualPositions.get(individualId);
 	                                if (individualIndex == null)
 	                                    continue;   // unwanted sample
 	
-									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
+									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(callSetId);
 		                            String gtCode = sampleGenotype.getCode();
 		                            
-									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals, annotationFieldThresholds))
+									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individualsByPop, annotationFieldThresholds))
 										continue;	// skip genotype
 									
 									if (individualGenotypes[individualIndex] == null)
@@ -272,7 +272,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		};
 
         String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
-		ExportManager exportManager = new ExportManager(sModule, assembly == null ? null : assembly.getId(), mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, variantQuery, samplesToExport, true, nQueryChunkSize, exportWriter, markerCount, progress);
+		ExportManager exportManager = new ExportManager(sModule, assembly == null ? null : assembly.getId(), mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, variantQuery, callSetsToExport, true, nQueryChunkSize, exportWriter, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + "all_users" + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(os);
