@@ -31,6 +31,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeSet;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -68,8 +71,8 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
      */
     private static final Logger LOG = Logger.getLogger(PCAExportHandler.class);
 
-    private static final int numoutevec = 30;
-
+    private static final int numoutevec = 20;
+    
     /**
      * The supported variant types.
      */
@@ -115,15 +118,7 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
 		for (Callset cs : callSetsToExport)
 			indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		List<String> sortedIndividuals = new ArrayList<>(indSet);
-		
-	    // Check if there is enough memory
-//		System.gc();
-//	    Runtime runtime = Runtime.getRuntime();
-//	    long availableRAM = runtime.maxMemory() - (runtime.totalMemory() - runtime.freeMemory());
-//	    long matrixSize = markerCount * sortedIndividuals.size();
-//	    if (matrixSize * 3 > availableRAM * 0.01)	// Empirically, we found that if matrix sizer is < 1% of the available memory, SVD calculation is possible. But we account for concurrency by making sure we have at least 3x more RAM available
-//	        throw new Exception("Not enough memory to process so much data. Please reduce matrix size to under " + (int) (availableRAM * 0.01 / 3) + " genotypes!");
-		
+
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
@@ -186,14 +181,28 @@ public class PCAExportHandler extends EigenstratExportHandler implements Experim
             }
 
             progress.moveToNextStep();
+            ExecutorService executor = Executors.newSingleThreadExecutor();
+            Future<FloatPCAResult> future = executor.submit(() -> {
+                return pcaCalc.performSmartSVD(diskMatrix, null, warningOS);
+            });
+            while (!future.isDone()) {
+                if (progress.isAborted()) {
+                    future.cancel(true);
+                    LOG.debug("PCA aborted by user");
+                    break;
+                }
+                Thread.sleep(500);
+            }
             
-//            ExecutorService exec = Executors.newSingleThreadExecutor();
-//            Future<OptimizedParallelPCACalculator.FloatPCAResult> future = pcaCalc.performSmartSVDWithProgressAsync(diskMatrix, null, warningOS, progress, exec);
-//            FloatPCAResult floatPcaResult = future.get();
-            FloatPCAResult floatPcaResult = pcaCalc.performSmartSVD(diskMatrix, null, warningOS);
+            if (progress.isAborted() || progress.getError() != null) {
+                diskMatrix.close();
+                return;
+            }
+
+            FloatPCAResult floatPcaResult = future.get();
             FMatrixRMaj floatEigenVectors = floatPcaResult.getEigenVectors();
 
-            float[][] transformedData = pcaCalc.transformDataStreaming(diskMatrix, floatEigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
+            float[][] transformedData = pcaCalc.transformDataBlockwise(diskMatrix, floatEigenVectors, numoutevec < individualPositions.size() ? numoutevec : null);
             float[] eigenValues = floatPcaResult.getEigenValues();
             
 //	        LOG.debug("pca calculation took " + (System.currentTimeMillis() - before) / 1000d + "s");
