@@ -51,10 +51,10 @@ import fr.cirad.mgdb.model.mongo.maintypes.Individual;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -148,23 +148,22 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 	 * @see fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandler#exportData(java.io.OutputStream, java.lang.String, java.util.List, fr.cirad.tools.ProgressIndicator, com.mongodb.DBCursor, java.util.Map, int, int, java.util.Map)
      */
     @Override
-	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individuals, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<GenotypingSample> samplesToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
-            MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-            ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
-    		MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
+	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
+    	MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
 
-    		Map<String, Integer> individualPositions = new LinkedHashMap<>();
-    		for (String ind : samplesToExport.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-    			individualPositions.put(ind, individualPositions.size());
- 
-    		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + individualPositions.size() + "individuals";
+    	Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
+    	Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
+        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individualPositions.size(), workWithSamples);
         
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + "individuals_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, "individual");
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
         
         zos.putNextEntry(new ZipEntry(exportName + ".eigenstratgeno"));
-        final Map<Integer, String> sampleIdToIndividualMap = samplesToExport.stream().collect(Collectors.toMap(GenotypingSample::getId, sp -> sp.getIndividual()));
+        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+        for (Callset cs : callSetsToExport)
+        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
@@ -197,7 +196,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 		                if (runsToWrite != null)
     		                runsToWrite.forEach(run -> {
     	                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
-                                    String individualId = sampleIdToIndividualMap.get(sampleId);
+                                    String individualId = callSetIdToIndividualMap.get(sampleId);
                                     Integer individualIndex = individualPositions.get(individualId);
                                     if (individualIndex == null)
                                         continue;   // unwanted sample
@@ -205,7 +204,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     								SampleGenotype sampleGenotype = run.getSampleGenotypes().get(sampleId);
     	                            String gtCode = sampleGenotype.getCode();
     	                            
-    								if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individuals, annotationFieldThresholds))
+    								if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individualsByPop, annotationFieldThresholds))
     									continue;	// skip genotype
 
     								if (individualGenotypes[individualIndex] == null)
@@ -262,7 +261,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 		Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
-		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQueryForTargetCollection, samplesToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQueryForTargetCollection, callSetsToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		if (tmpFolderPath != null)
 			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
 		exportManager.readAndWrite(zos);
@@ -274,7 +273,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
         progress.addStep("Generating .ind file");
         progress.moveToNextStep();
         StringBuilder indFileContents = new StringBuilder(individualPositions.size() * 10);
-        Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individuals, true);
+        Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individualsByPop, true);
         for (String individual : individualPositions.keySet()) {
         	String pop = individualPops.get(individual);
             indFileContents.append(individual).append("\t").append(getIndividualGenderCode(sModule, individual)).append("\t").append((pop == null ? "." : pop)).append(LINE_SEPARATOR);

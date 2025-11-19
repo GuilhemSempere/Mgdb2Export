@@ -143,7 +143,7 @@ public class MgdbSearchVariantsRequest extends SearchVariantsRequest {
     }
 
     public List<List<String>> getAllCallSetIds() {
-        return getNumberGroups() == 0 && getCallSetIds().isEmpty() ? new ArrayList<>() : (additionalCallSetIds == null ? new ArrayList<>() {{ add(0, getCallSetIds()); }} : new ArrayList<>(additionalCallSetIds) {{ add(0, getCallSetIds()); }});
+        return getNumberGroups() == 0 && (getCallSetIds() == null || getCallSetIds().isEmpty()) ? new ArrayList<>() : (additionalCallSetIds == null ? new ArrayList<>() {{ add(0, getCallSetIds()); }} : new ArrayList<>(additionalCallSetIds) {{ add(0, getCallSetIds()); }});
     }
 
     public boolean isGetGT() {

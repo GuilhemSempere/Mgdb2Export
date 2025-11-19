@@ -88,9 +88,19 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
     public String getExportArchiveExtension() {
         return "fjzip";
     }
+    
+    @Override
+    public String getMetadataContentsPrefix() {
+        return "# fjFile = PHENOTYPE" + LINE_SEPARATOR;
+    }
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public String getMetadataFileExtension() {
+        return "phenotype";
+    }
+
+    @Override
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
         // save existing warnings into a temp file so we can append to it
         File warningFile = File.createTempFile("export_warnings_", "");
         try {
@@ -106,28 +116,19 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 		    	}
 	        }
 	
-	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, exportOutputs);
 	        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 	        
 	        Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-	        String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
+	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
 	        int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 	
-	        MongoCollection<Document> varColl = mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class));
-	
-	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty()) {
-	        	ArrayList<String> exportedIndividuals = new ArrayList<>();
-		        for (File indFile : exportOutputs.getGenotypeFiles())
-			        try (Scanner scanner = new Scanner(indFile)) {
-			        	exportedIndividuals.add(scanner.nextLine());
-			        }
-	        	IExportHandler.addMetadataEntryIfAny(exportName + ".phenotype", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "# fjFile = PHENOTYPE" + LINE_SEPARATOR);
-	        }
 	        
 	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 	        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
 	        zos.putNextEntry(new ZipEntry(exportName + ".genotype"));
+	        MongoCollection<Document> varColl = mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class));
 	        writeGenotypeFile(zos, nQueryChunkSize, varColl, variantQueryForTargetCollection, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
 	    	zos.closeEntry();
 	

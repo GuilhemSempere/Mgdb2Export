@@ -103,7 +103,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 	}
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Collection<String> individualMetadataFieldsToExport, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 
@@ -122,9 +122,9 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 		    	}
 	        }
 	
-	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles);
+	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, exportOutputs);
 			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-			String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + exportOutputs.getGenotypeFiles().length + "individuals";
+	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
 	        
 	        ArrayList<String> exportedIndividuals = new ArrayList<>();
 	        for (File indFile : exportOutputs.getGenotypeFiles())
@@ -132,9 +132,6 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 	        		exportedIndividuals.add(scanner.nextLine());
 	        	}
 	
-	        if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-	        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + exportOutputs.getGenotypeFiles().length + "individuals_metadata.tsv", sModule, sExportingUser, exportedIndividuals, individualMetadataFieldsToExport, zos, "individual");
-	        
 	        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
 	        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (new Document("$and", tmpVarCollName == null ? variantDataQueries.iterator().next() : (varQueryWrapper.getBareQueries().iterator().hasNext() ? varQueryWrapper.getBareQueries().iterator().next() : new BasicDBList())));
 	
