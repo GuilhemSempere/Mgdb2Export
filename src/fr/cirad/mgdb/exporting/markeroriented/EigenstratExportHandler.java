@@ -28,8 +28,8 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -41,10 +41,10 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
-import com.mongodb.client.MongoCollection;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
+import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.Individual;
@@ -55,6 +55,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
+import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -151,23 +152,59 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 	public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
         ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
-    	MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
+//    	MongoCollection collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class));
 
-    	Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
-    	Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, individualPositions.size(), workWithSamples);
-        
+    	TreeSet<String> indSet = new TreeSet<>(new AlphaNumericComparator<String>());
+		for (Callset cs : callSetsToExport)
+			indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
+		
+		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
+	    String exportName = sModule + (assembly != null && assembly.getName() != null ? "__" + assembly.getName() : "") + "__" + markerCount + "variants__" + indSet.size() + "individuals";
+	    
         if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
-        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + individualPositions.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, individualPositions.keySet(), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
-        
-        zos.putNextEntry(new ZipEntry(exportName + ".eigenstratgeno"));
+        	IExportHandler.addMetadataEntryIfAny(sModule + "__" + indSet.size() + (workWithSamples ? "sample" : "individual" ) + "s_metadata.tsv", sModule, sExportingUser, indSet, individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
+	    
+		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+	
+	    zos.putNextEntry(new ZipEntry(exportName + ".eigenstratgeno"));
+	    ExportOutputs exportOutputs = writeGenotypeFile(zos, sModule, nAssemblyId, workWithSamples, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport, individualsByPop);
+	    zos.closeEntry();
+	        
+		File[] snpFiles = exportOutputs.getVariantFiles();
+	    IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + ".snp");
+	
+		File[] warningFiles = exportOutputs.getWarningFiles();
+	    IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
+
+        progress.addStep("Generating .ind file");
+        progress.moveToNextStep();
+        StringBuilder indFileContents = new StringBuilder(indSet.size() * 10);
+        Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individualsByPop, true);
+        for (String individual : indSet) {
+        	String pop = individualPops.get(individual);
+            indFileContents.append(individual).append("\t").append(getIndividualGenderCode(sModule, individual)).append("\t").append((pop == null ? "." : pop)).append(LINE_SEPARATOR);
+        }
+
+        zos.putNextEntry(new ZipEntry(exportName + ".ind"));
+        zos.write(indFileContents.toString().getBytes());
+        zos.closeEntry();
+
+        zos.finish();
+        zos.close();
+        progress.setCurrentStepProgress((short) 100);
+    }
+    
+    public ExportOutputs writeGenotypeFile(OutputStream os, String sModule, Integer nAssemblyId, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport, Map<String, Collection<String>> individualsByPop) throws Exception {
         final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
         for (Callset cs : callSetsToExport)
         	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 	    final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
+	    Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 		
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
@@ -258,40 +295,16 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 			}
 		};
 
-		Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-		Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
-
-		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, collWithPojoCodec, VariantRunData.class, variantQueryForTargetCollection, callSetsToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
+		String usedCollName = tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantRunData.class);
+		ExportManager exportManager = new ExportManager(sModule, nAssemblyId, mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(usedCollName), VariantRunData.class, variantQuery, callSetsToExport, true, nQueryChunkSize, writingThread, markerCount, progress);
 		if (tmpFolderPath != null)
-			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + Helper.convertToMD5(progress.getProcessId()));
-		exportManager.readAndWrite(zos);
-        zos.closeEntry();            
+			exportManager.setTmpExtractionFolder(tmpFolderPath + File.separator + "all_users" + File.separator + Helper.convertToMD5(progress.getProcessId()));
+		exportManager.readAndWrite(os);
         
         if (unassignedMarkers.size() > 0)
         	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
-        
-        progress.addStep("Generating .ind file");
-        progress.moveToNextStep();
-        StringBuilder indFileContents = new StringBuilder(individualPositions.size() * 10);
-        Map<String, String> individualPops = IExportHandler.getIndividualPopulations(individualsByPop, true);
-        for (String individual : individualPositions.keySet()) {
-        	String pop = individualPops.get(individual);
-            indFileContents.append(individual).append("\t").append(getIndividualGenderCode(sModule, individual)).append("\t").append((pop == null ? "." : pop)).append(LINE_SEPARATOR);
-        }
 
-        zos.putNextEntry(new ZipEntry(exportName + ".ind"));
-        zos.write(indFileContents.toString().getBytes());
-        zos.closeEntry();
-        
-		File[] snpFiles = exportManager.getOutputs().getVariantFiles();
-        IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + ".snp");
-
-		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
-        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
-
-        zos.finish();
-        zos.close();
-        progress.setCurrentStepProgress((short) 100);
+		return exportManager.getOutputs();
     }
 
     /* (non-Javadoc)
