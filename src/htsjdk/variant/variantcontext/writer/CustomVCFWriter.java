@@ -408,11 +408,10 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
                             VCFFormatHeaderLine metaData = mHeader.getFormatHeaderLine(field);
                             if (metaData != null) {
                                 int numInFormatField = Math.min(10000, metaData.getCount(vc));	// limit applied to avoid OutOfMemoryError on some MIXED type variants where the value ended up being huge (this change does not seem to have any effect on the output)
-                                if (numInFormatField > 1 && val.equals(".")) {
+                                if (numInFormatField > 1 && ".".equals(val == null ? "." : val)) {
                                     StringBuilder sb = new StringBuilder(".");
-                                    for (int i = 1; i < numInFormatField; i++) {
+                                    for (int i = 1; i < numInFormatField; i++)
                                         sb.append(",.");
-                                    }
 
                                     val = sb.toString();
                                 }
@@ -425,10 +424,13 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
                     }
                 }
             } while (true);
+            
             int i;
-            for (i = attrs.size() - 1; i >= 0 && isMissingValue((String) attrs.get(i)); i--) {
-                attrs.remove(i);
-            }
+            
+            // removing this optimization which suppresses the last attribute value if it is a missing value (we prefer to be more strictly compliant with VCF format)
+//            for (i = attrs.size() - 1; i >= 0 && isMissingValue((String) attrs.get(i)); i--) {
+//                attrs.remove(i);
+//            }
 
             i = 0;
             while (i < attrs.size()) {
@@ -439,7 +441,6 @@ public class CustomVCFWriter extends IndexingVariantContextWriter {
                 i++;
             }
         }
-
     }
 
     /**

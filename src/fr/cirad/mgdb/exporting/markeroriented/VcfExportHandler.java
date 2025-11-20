@@ -34,7 +34,6 @@ import java.util.TreeSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -67,10 +66,13 @@ import htsjdk.samtools.SAMSequenceRecord;
 import htsjdk.variant.variantcontext.VariantContext;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
 import htsjdk.variant.vcf.VCFContigHeaderLine;
+import htsjdk.variant.vcf.VCFFilterHeaderLine;
 import htsjdk.variant.vcf.VCFFormatHeaderLine;
 import htsjdk.variant.vcf.VCFHeader;
 import htsjdk.variant.vcf.VCFHeaderLine;
+import htsjdk.variant.vcf.VCFHeaderLineCount;
 import htsjdk.variant.vcf.VCFHeaderLineType;
+import htsjdk.variant.vcf.VCFInfoHeaderLine;
 
 /**
  * The Class VcfExportHandler.
@@ -212,19 +214,36 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 				{}
 		}
     }
-		
+
+    private static VCFInfoHeaderLine getMostPermissiveInfo(VCFInfoHeaderLine line1, VCFInfoHeaderLine line2) {
+        // Prioritize UNBOUNDED count over specific counts
+        VCFHeaderLineCount count = line1.getCountType() == VCFHeaderLineCount.UNBOUNDED ? 
+            line1.getCountType() : line2.getCountType();
+        
+        // Prioritize String type over others (most permissive)
+        VCFHeaderLineType type = line1.getType() == VCFHeaderLineType.String ? 
+            line1.getType() : line2.getType();
+        
+        String description = line1.getDescription() + " / " + line2.getDescription();
+        
+        return new VCFInfoHeaderLine(line1.getID(), count, type, description);
+    }
+
+    private VCFFormatHeaderLine getMostPermissiveFormat(VCFFormatHeaderLine line1, VCFFormatHeaderLine line2) {
+        VCFHeaderLineCount count = line1.getCountType() == VCFHeaderLineCount.UNBOUNDED ? 
+            line1.getCountType() : line2.getCountType();
+        
+        VCFHeaderLineType type = line1.getType() == VCFHeaderLineType.String ? 
+            line1.getType() : line2.getType();
+        
+        String description = line1.getDescription() + " / " + line2.getDescription();
+        
+        return new VCFFormatHeaderLine(line1.getID(), count, type, description);
+    }
+    
     public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		Integer projectId = null;
-		for (Callset cs : callSetsToExport) {
-			if (projectId == null)
-				projectId = cs.getProjectId();
-			else if (projectId != cs.getProjectId())
-			{
-				projectId = 0;
-				break;	// more than one project are involved: no header will be written
-			}
-		}
+		List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
 
 		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
@@ -239,20 +258,72 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		progress.moveToNextStep();	// done with dictionary
 		MongoCollection<org.bson.Document> vcfHeaderColl = mongoTemplate.getCollection(MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class));
-		Document vcfHeaderQuery = new Document("_id." + VcfHeaderId.FIELDNAME_PROJECT, projectId);
+		Document vcfHeaderQuery = new Document("_id." + VcfHeaderId.FIELDNAME_PROJECT, new Document("$in", projectIDs));
 		long nHeaderCount = vcfHeaderColl.countDocuments(vcfHeaderQuery);
 		MongoCursor<Document> headerCursor = vcfHeaderColl.find(vcfHeaderQuery).iterator();
-		Set<VCFHeaderLine> headerLines = new HashSet<VCFHeaderLine>();
-		boolean fWriteCommandLine = true, fWriteEngineHeaders = true;	// default values
+
+		Map<String, VCFInfoHeaderLine> mergedInfoHeaders = new LinkedHashMap<>();
+		Map<String, VCFFormatHeaderLine> mergedFormatHeaders = new LinkedHashMap<>();
+		Map<String, VCFFilterHeaderLine> mergedFilterHeaders = new LinkedHashMap<>();
+		Set<VCFHeaderLine> mergedOtherHeaders = new HashSet<>();
+		boolean fWriteCommandLine = true, fWriteEngineHeaders = true;
 
 		while (headerCursor.hasNext()) {
-			DBVCFHeader dbVcfHeader = DBVCFHeader.fromDocument(headerCursor.next());
-			headerLines.addAll(dbVcfHeader.getHeaderLines());
-
-			fWriteCommandLine = nHeaderCount == 1 && dbVcfHeader.getWriteCommandLine();	// wouldn't make sense to include command lines for several runs
-			if (!dbVcfHeader.getWriteEngineHeaders())
-				fWriteEngineHeaders = false;
+		    DBVCFHeader dbVcfHeader = DBVCFHeader.fromDocument(headerCursor.next());
+		    
+		    // Merge INFO headers with conflict resolution
+		    for (Map.Entry<String, VCFInfoHeaderLine> entry : dbVcfHeader.getmInfoMetaData().entrySet()) {
+		        String id = entry.getKey();
+		        VCFInfoHeaderLine newLine = entry.getValue();
+		        
+		        if (mergedInfoHeaders.containsKey(id)) {
+		            VCFInfoHeaderLine existing = mergedInfoHeaders.get(id);
+		            if (!existing.equals(newLine)) {
+		                LOG.warn("Conflicting INFO header definition for '" + id + "'. Using most permissive definition.");
+		                // Keep the most permissive (e.g., UNBOUNDED count, String type)
+		                mergedInfoHeaders.put(id, getMostPermissiveInfo(existing, newLine));
+		            }
+		        } else {
+		            mergedInfoHeaders.put(id, newLine);
+		        }
+		    }
+		    
+		    // Merge FORMAT headers with conflict resolution
+		    for (Map.Entry<String, VCFFormatHeaderLine> entry : dbVcfHeader.getmFormatMetaData().entrySet()) {
+		        String id = entry.getKey();
+		        VCFFormatHeaderLine newLine = entry.getValue();
+		        
+		        if (mergedFormatHeaders.containsKey(id)) {
+		            VCFFormatHeaderLine existing = mergedFormatHeaders.get(id);
+		            if (!existing.equals(newLine)) {
+		                LOG.warn("Conflicting FORMAT header definition for '" + id + "'. Using most permissive definition.");
+		                mergedFormatHeaders.put(id, getMostPermissiveFormat(existing, newLine));
+		            }
+		        } else {
+		            mergedFormatHeaders.put(id, newLine);
+		        }
+		    }
+		    
+		    // Merge FILTER headers
+		    for (Map.Entry<String, VCFFilterHeaderLine> entry : dbVcfHeader.getmFilterMetaData().entrySet()) {
+		        mergedFilterHeaders.putIfAbsent(entry.getKey(), entry.getValue());
+		    }
+		    
+		    // Merge other headers
+		    mergedOtherHeaders.addAll(dbVcfHeader.getmOtherMetaData().values());
+		    mergedOtherHeaders.addAll(dbVcfHeader.getmMetaData().values());
+		    
+		    fWriteCommandLine = nHeaderCount == 1 && dbVcfHeader.getWriteCommandLine();
+		    if (!dbVcfHeader.getWriteEngineHeaders())
+		        fWriteEngineHeaders = false;
 		}
+
+		// Reconstruct headerLines from merged maps
+		Set<VCFHeaderLine> headerLines = new HashSet<>();
+		headerLines.addAll(mergedInfoHeaders.values());
+		headerLines.addAll(mergedFormatHeaders.values());
+		headerLines.addAll(mergedFilterHeaders.values());
+		headerLines.addAll(mergedOtherHeaders);
 		headerCursor.close();
 
 		if (headerLines.size() == 0)
