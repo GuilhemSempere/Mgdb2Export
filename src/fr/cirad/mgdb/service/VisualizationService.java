@@ -25,7 +25,6 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
@@ -36,12 +35,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import javax.ejb.ObjectNotFoundException;
-
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
-
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -62,14 +58,13 @@ import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
-import fr.cirad.mgdb.model.mongo.subtypes.Run;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
 import fr.cirad.model.MgdbDensityRequest;
 import fr.cirad.model.MgdbVcfFieldPlotRequest;
-import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryBuilder;
@@ -88,78 +83,40 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 @Component
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
-    
-    	
-    protected boolean findDefaultRangeMinMax(MgdbDensityRequest gsvdr, String tmpCollName /* if null, main variant coll is used*/)
+
+    protected boolean findDefaultRangeMinMax(MgdbDensityRequest mdr, String tmpCollName /* if null, main variant coll is used*/) throws Exception
     {
-    	if (gsvdr.getDisplayedRangeMin() != null && gsvdr.getDisplayedRangeMax() != null) {
+    	if (mdr.getDisplayedRangeMin() != null && mdr.getDisplayedRangeMax() != null) {
     		LOG.info("findDefaultRangeMinMax skipped because min-max values already set");
     		return true;	// nothing to do
     	}
 
-        String info[] = Helper.getInfoFromId(gsvdr.getVariantSetId(), 2);
-        String sModule = info[0];
-
-		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-		
-		BasicDBList matchAndList = new BasicDBList();
-		if (tmpCollName == null)
-			matchAndList.add(new BasicDBObject(VariantData.FIELDNAME_RUNS + "." + Run.FIELDNAME_PROJECT_ID, Integer.parseInt(info[1])));	
-		matchAndList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gsvdr.getDisplayedSequence()));
-        if ((gsvdr.getStart() != null && gsvdr.getStart() != -1) || (gsvdr.getEnd() != null && gsvdr.getEnd() != -1)) {
-            BasicDBObject posCrit = new BasicDBObject();
-            if (gsvdr.getStart() != null && gsvdr.getStart() != -1)
-                posCrit.put("$gte", gsvdr.getStart());
-            if (gsvdr.getEnd() != null && gsvdr.getEnd() != -1)
-                posCrit.put("$lte", gsvdr.getEnd());
-            matchAndList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, posCrit));
-        }
-		if (gsvdr.getDisplayedVariantType() != null)
-			matchAndList.add(new BasicDBObject(VariantData.FIELDNAME_TYPE, gsvdr.getDisplayedVariantType()));
-		BasicDBObject match = new BasicDBObject("$match", new BasicDBObject("$and", matchAndList));
-		
-		BasicDBObject limit = new BasicDBObject("$limit", 1);
-		String startFieldPath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-
-		MongoCollection<Document> usedVarColl = mongoTemplate.getCollection(tmpCollName == null ? mongoTemplate.getCollectionName(VariantData.class) : tmpCollName); 
-		if (gsvdr.getDisplayedRangeMin() == null) {
-			BasicDBObject sort = new BasicDBObject("$sort", new BasicDBObject(startFieldPath, 1));
-			MongoCursor<Document> cursor = usedVarColl.aggregate(Arrays.asList(match, sort, limit)).iterator();
-			if (!cursor.hasNext())
-				return false;	// no variant found matching filter
-
-			Document aggResult = (Document) cursor.next();
-			gsvdr.setDisplayedRangeMin((Long) Helper.readPossiblyNestedField(aggResult, startFieldPath, "; ", null));
-		}
-
-		if (gsvdr.getDisplayedRangeMax() == null) {
-			BasicDBObject sort = new BasicDBObject("$sort", new BasicDBObject(startFieldPath, -1));
-			MongoCursor<Document> cursor = usedVarColl.aggregate(Arrays.asList(match, sort, limit)).collation(IExportHandler.collationObj).iterator();
-			if (!cursor.hasNext())
-				return false;	// no variant found matching filter
-
-			Document aggResult = (Document) cursor.next();
-			gsvdr.setDisplayedRangeMax((Long) Helper.readPossiblyNestedField(aggResult, startFieldPath, "; ", null));
-		}
-		return true;
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(mdr.getVariantSetId());
+        List<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
+        
+    	Long[] minMaxFound = new Long[2];	// will be filled in by the method below
+    	boolean retVal = Helper.findDefaultRangeMinMax(info[0], projIDs, tmpCollName, mdr.getDisplayedVariantType(), Arrays.asList(mdr.getDisplayedSequence()), mdr.getStart(), mdr.getEnd(), minMaxFound);
+    	
+    	mdr.setDisplayedRangeMin(minMaxFound[0]);
+    	mdr.setDisplayedRangeMax(minMaxFound[1]);
+  
+		return retVal;
 	}
     
-    public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String token) throws Exception {
+    public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String processId) throws Exception {
         long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
 
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence()});
+        ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence()});
         ProgressIndicator.registerProgressIndicator(progress);
 
-        final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
 
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
         long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
         if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
         {
@@ -167,11 +124,11 @@ public class VisualizationService {
             return null;
         }
 
-        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class), usedVarCollName = nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName();
+        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class) ;
         final ConcurrentHashMap<Long, Long> result = new ConcurrentHashMap<Long, Long>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
+            if (!findDefaultRangeMinMax(gdr, nTempVarCount == 0 ? null : tmpVarColl.getNamespace().getCollectionName())) {
 				progress.setError("selectionDensity: Unable to find default position range, make sure current results are in sync with interface filters.");
 				return result;
 			}
@@ -182,26 +139,17 @@ public class VisualizationService {
 
         final long rangeMin = gdr.getDisplayedRangeMin();
         final ProgressIndicator finalProgress = progress;
-        String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
         
-        ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
-        for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++)
-        {
-            BasicDBList queryList = new BasicDBList();
-            queryList.add(new BasicDBObject(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence()));
-            if (gdr.getDisplayedVariantType() != null)
-                queryList.add(new BasicDBObject(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType()));
-            String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-            queryList.add(new BasicDBObject(startSitePath, new BasicDBObject("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize))));
-			queryList.add(new BasicDBObject(startSitePath, new BasicDBObject( "$lt", gdr.getDisplayedRangeMin() + ((i+1)*intervalSize))));
-            if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-                queryList.addAll(variantQueryDBList);
-            final long chunkIndex = i;
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
+        
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
+            final int chunkIndex = i;
 
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted()) {
-                        long partialCount = mongoTemplate.getCollection(usedVarCollName).countDocuments(new BasicDBObject("$and", queryList));
+                        long partialCount = mongoTemplate.getCollection(nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName()).countDocuments(intervalQueries.get(chunkIndex));
                         nTotalTreatedVariantCount.addAndGet((int) partialCount);
                         result.put((long) (rangeMin + (chunkIndex*intervalSize)), partialCount);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
@@ -271,22 +219,44 @@ public class VisualizationService {
 			}
 		}
     }
+    
+    public List<BasicDBObject> getIntervalQueries(int nIntervalCount, Collection<String> sequences, String variantType, long rangeMin, long rangeMax, BasicDBList variantQueryDBListToMerge) {
+		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+		final int intervalSize = (int) Math.ceil(Math.max(1, ((rangeMax - rangeMin) / (nIntervalCount - 1))));
 
-    public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token) throws Exception {
+		List<BasicDBObject> result = new ArrayList<>();
+		for (int i=0; i<nIntervalCount; i++) {
+			BasicDBObject initialMatchStage = new BasicDBObject();
+			if (sequences != null && !sequences.isEmpty())
+				initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", sequences));
+			if (variantType != null)
+				initialMatchStage.put(VariantData.FIELDNAME_TYPE, variantType);
+			BasicDBObject positionSettings = new BasicDBObject();
+			positionSettings.put("$gte", rangeMin + (i*intervalSize));
+			positionSettings.put(i < nIntervalCount - 1 ? "$lt" : "$lte", i < nIntervalCount - 1 ? rangeMin + ((i+1)*intervalSize) : rangeMax);
+			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
+			initialMatchStage.put(startSitePath, positionSettings);
+			if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
+				mergeVariantQueryDBList(initialMatchStage, variantQueryDBListToMerge);
+			result.add(initialMatchStage);
+		}
+		return result;
+    }
+
+    public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
     	long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
 
 		ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Fst estimate on sequence " + gdr.getDisplayedSequence()});
 		ProgressIndicator.registerProgressIndicator(progress);
 
-		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+		final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
         Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
         final BasicDBList variantQueryDBList = variantRunDataQueries.size() == 1 ? variantRunDataQueries.iterator().next() : new BasicDBList();
 
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -309,29 +279,17 @@ public class VisualizationService {
 		final long rangeMin = gdr.getDisplayedRangeMin();
 		final ProgressIndicator finalProgress = progress;
 
-		List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
 
-		ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
+		ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
 		final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
-
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
             Thread t = new Thread() {
             	public void run() {
             		if (finalProgress.isAborted())
@@ -481,19 +439,18 @@ public class VisualizationService {
 		return new TreeMap<Long, Double>(result);
     }
     
-    public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr, String token) throws Exception {
+    public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
 
 		ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Tajima's D on sequence " + gdr.getDisplayedSequence()});
 		ProgressIndicator.registerProgressIndicator(progress);
 
-		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+		final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
       
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -515,29 +472,18 @@ public class VisualizationService {
 				return new ArrayList<>();
 			}
 
-		List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
 
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
-        ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
 
 			Thread t = new Thread() {
 				public void run() {
@@ -587,19 +533,18 @@ public class VisualizationService {
 		return Arrays.asList(new TreeMap<>(tajimaD), new TreeMap<>(segregatingSites));
 	}
     
-    public Map<Long, Float> selectionMaf(MgdbDensityRequest gdr, String token) throws Exception {
+    public Map<Long, Float> selectionMaf(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
-
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        
 		ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "MAF on sequence " + gdr.getDisplayedSequence()});
 		ProgressIndicator.registerProgressIndicator(progress);
 
-		final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+		final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
 
-		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+		MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
 		long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
 		if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
 		{
@@ -620,29 +565,19 @@ public class VisualizationService {
 				return result;
 			}
 
-		List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl);
+		List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
 		
 		final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
-        ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-		String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 
-		for (int i=0; i<gdr.getDisplayedRangeIntervalCount(); i++) {
-			BasicDBObject initialMatchStage = new BasicDBObject();
-			initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, gdr.getDisplayedSequence());
-			if (gdr.getDisplayedVariantType() != null)
-				initialMatchStage.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
-			BasicDBObject positionSettings = new BasicDBObject();
-			positionSettings.put("$gte", gdr.getDisplayedRangeMin() + (i*intervalSize));
-			positionSettings.put(i < gdr.getDisplayedRangeIntervalCount() - 1 ? "$lt" : "$lte", i < gdr.getDisplayedRangeIntervalCount() - 1 ? gdr.getDisplayedRangeMin() + ((i+1)*intervalSize) : gdr.getDisplayedRangeMax());
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			initialMatchStage.put(startSitePath, positionSettings);
-			if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-				mergeVariantQueryDBList(initialMatchStage, variantQueryDBList);
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
 			final long chunkIndex = i;
 
 			List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-			windowQuery.set(0, new BasicDBObject("$match", initialMatchStage));
+			intervalQueries.get(i).append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false));	// exclude multi-allelic variants from MAF calculation
+			windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
 			
 			Thread t = new Thread() {
 				public void run() {
@@ -700,16 +635,11 @@ public class VisualizationService {
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
     private static final String GENOTYPE_DATA_S10_SAMPLEINDEX = "sx";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<GenotypingSample>> individualToSampleListMap, boolean keepPosition) {
-    	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals) throws Exception {
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
 
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        GenotypingProject genotypingProject = mongoTemplate.findById(Integer.valueOf(projId), GenotypingProject.class);
-
-        boolean fIsMultiRunProject = genotypingProject.getRuns().size() > 1;
-        boolean fGotMultiSampleIndividuals = (individualToSampleListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
 
     	List<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
@@ -729,10 +659,10 @@ public class VisualizationService {
 	    	pipeline.add(new BasicDBObject("$unwind", "$" + GENOTYPE_DATA_S2_DATA));
 
 	    	// Stage 4 : Keep only the right project
-	    	pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S2_DATA + "._id." + VariantRunDataId.FIELDNAME_PROJECT_ID, projId)));
+	    	pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S2_DATA + "._id." + VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs))));
     	}
 
-    	if (fGotMultiSampleIndividuals) {
+    	if (fGotMultiCallSetIndividuals) {
     		if (useTempColl) {
 	    		// Stage 5 : Convert samples to an array
 	    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
@@ -753,29 +683,44 @@ public class VisualizationService {
     		pipeline.add(new BasicDBObject("$project", spkeyval));
 
     		// Stage 8 : Lookup samples
-    		BasicDBObject sampleLookup = new BasicDBObject();
-    		sampleLookup.put("from", "samples");
-    		sampleLookup.put("localField", GENOTYPE_DATA_S7_SAMPLEID);
-    		sampleLookup.put("foreignField", "_id");
-    		sampleLookup.put("as", GENOTYPE_DATA_S8_SAMPLE);
+    		BasicDBObject sampleLookup = new BasicDBObject("from", mongoTemplate.getCollectionName(GenotypingSample.class))
+		        .append("let", new BasicDBObject("localSi", "$" + GENOTYPE_DATA_S7_SAMPLEID))
+		        .append("pipeline", Arrays.asList(
+		            // Stage 1: match where $$localSi is in cs._id
+		            new BasicDBObject("$match",
+		                new BasicDBObject("$expr",
+		                    new BasicDBObject("$in", Arrays.asList("$$localSi", "$" + GenotypingSample.FIELDNAME_CALLSETS + "._id"))
+		                )
+		            ),
+		            // Stage 2: unwind cs
+		            new BasicDBObject("$unwind", "$" + GenotypingSample.FIELDNAME_CALLSETS),
+		            // Stage 3: match exact cs._id
+		            new BasicDBObject("$match",
+		                new BasicDBObject("$expr",
+		                    new BasicDBObject("$eq", Arrays.asList("$" + GenotypingSample.FIELDNAME_CALLSETS + "._id", "$$localSi"))
+		                )
+		            ),
+		            // Stage 4: project cs and in
+		            new BasicDBObject("$project",
+		                new BasicDBObject("_id", 0)
+		                    .append(GenotypingSample.FIELDNAME_CALLSETS, 1)
+		                    .append(GenotypingSample.FIELDNAME_INDIVIDUAL, 1)
+		            )
+		        ))
+		        .append("as", GENOTYPE_DATA_S8_SAMPLE);
     		pipeline.add(new BasicDBObject("$lookup", sampleLookup));
-
+    		
     		// Stage 9 : Get first sample (shouldn't get more than one anyway)
-    		BasicDBObject firstSample = new BasicDBObject();
-    		firstSample.put(GENOTYPE_DATA_S7_GENOTYPE, 1);
-    		if (keepPosition)
-    			firstSample.put(GENOTYPE_DATA_S7_POSITION, 1);
-    		firstSample.put(GENOTYPE_DATA_S8_SAMPLE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + GENOTYPE_DATA_S8_SAMPLE, 0)));
-    		pipeline.add(new BasicDBObject("$project", firstSample));
+    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S8_SAMPLE, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S8_SAMPLE))));
 
     		// Stage 10 : Regroup individual runs
     		BasicDBObject individualGroup = new BasicDBObject();
     		BasicDBObject individualGroupId = new BasicDBObject();
-    		individualGroupId.put(GENOTYPE_DATA_S10_VARIANTID, "$_id");
+    		individualGroupId.put(GENOTYPE_DATA_S10_VARIANTID, "$_id." + VariantRunDataId.FIELDNAME_VARIANT_ID);
     		individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_INDIVIDUAL);
     		individualGroup.put("_id", individualGroupId);
     		individualGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$addToSet", "$" + GENOTYPE_DATA_S7_GENOTYPE));
-    		individualGroup.put(GENOTYPE_DATA_S10_SAMPLEINDEX, new BasicDBObject("$min", "$" + GENOTYPE_DATA_S8_SAMPLE + "._id"));
+    		individualGroup.put(GENOTYPE_DATA_S10_SAMPLEINDEX, new BasicDBObject("$min", "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_CALLSETS + "._id"));
     		if (keepPosition)
     			individualGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", individualGroup));
@@ -785,32 +730,31 @@ public class VisualizationService {
 
     		// Stage 12 : Group back by variant
     		BasicDBObject variantGroup = new BasicDBObject();
-    		variantGroup.put("_id", "$_id." + GENOTYPE_DATA_S10_VARIANTID);
+    		variantGroup.put("_id", "$_id");
     		BasicDBObject spObject = new BasicDBObject();
-    		spObject.put("k", new BasicDBObject("$toString", "$" + GENOTYPE_DATA_S10_SAMPLEINDEX));
-    		spObject.put("v", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))));
-    		variantGroup.put("sp", new BasicDBObject("$push", spObject));
+    		spObject.put("k", new BasicDBObject("$toString", "$_id." + GENOTYPE_DATA_S10_INDIVIDUALID));
+    		spObject.put("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))));
+    		variantGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$push", spObject));
     		if (keepPosition)
     			variantGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", variantGroup));
 
     		// Stage 13 : Convert back to sp object
     		pipeline.add(new BasicDBObject("$project", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
-    	} else {
-    		if (useTempColl) {
-		    	// Stage 5 : Group runs
-		    	BasicDBObject groupRuns = new BasicDBObject();
-		    	groupRuns.put("_id", "$_id");
-		    	groupRuns.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
-		    	pipeline.add(new BasicDBObject("$group", groupRuns));
-    		} else if (fIsMultiRunProject) {
-    			// Stage 5 : Group runs
-		    	BasicDBObject groupRuns = new BasicDBObject();
-		    	groupRuns.put("_id", "$_id");
-		    	groupRuns.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$first", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
-		    	pipeline.add(new BasicDBObject("$group", groupRuns));
-    		}
-    	}
+    	} else if (useTempColl) {
+	    	// Stage 5 : Group runs (we used $lookup then $unwind)
+	    	BasicDBObject groupRuns = new BasicDBObject();
+	    	groupRuns.put("_id", "$_id");
+	    	groupRuns.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
+	    	pipeline.add(new BasicDBObject("$group", groupRuns));
+		}
+    	
+		if (info[1].length() > 1) {	// multiple projects involved: merge genotypes into a single document per variant
+			BasicDBObject projectMergeGroup = new BasicDBObject();
+			projectMergeGroup.put("_id", new BasicDBObject(FST_S22_VARIANTID, "$_id." + FST_S22_VARIANTID));
+			projectMergeGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
+			pipeline.add(new BasicDBObject("$group", projectMergeGroup));
+		}
 
     	return pipeline;
     }
@@ -833,29 +777,31 @@ public class VisualizationService {
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
-    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
 //		System.err.println("Fst : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 		
-    	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<Collection<String>> selectedIndividuals = new ArrayList<Collection<String>>();
-    	List<List<String>> callsetIds = gdr.getAllCallSetIds();
-		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.add(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+    	List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
+    	List<List<String>> ga4ghCallsetIds = gdr.getAllCallSetIds();
+		for (int i = 0; i < ga4ghCallsetIds.size(); i++)
+			selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        for (Collection<String> group : selectedIndividuals) {
-        	individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, group));
-        }
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        for (Collection<String> group : selectedMaterial)
+			if (!workWithSamples)
+				individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, group));
+	        else 
+	        	individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, false);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals);
 
     	// Stage 14 : Get populations genotypes
     	BasicDBList populationGenotypes = new BasicDBList();
-    	for (Collection<String> group : selectedIndividuals) {
-    		populationGenotypes.add(getFullPathToGenotypes(sModule, projId, group, individualToSampleListMap));
+    	for (Collection<String> group : selectedMaterial) {
+    		populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
     	}
 
     	BasicDBObject projectGenotypes = new BasicDBObject(FST_S14_POPULATIONGENOTYPES, populationGenotypes);
@@ -947,7 +893,7 @@ public class VisualizationService {
 
     private static final String TJD_S14_GENOTYPES = "gl";
     private static final String TJD_S15_SAMPLESIZE = "sz";
-    private static final String TJD_S18_GENOTYPE = "gt";
+    private static final String TJD_S18_GENOTYPE = SampleGenotype.FIELDNAME_GENOTYPECODE;
     private static final String TJD_S20_VARIANTID = "vi";
     private static final String TJD_S20_ALLELEID = "ai";
     private static final String TJD_S20_ALLELECOUNT = "ac";
@@ -958,27 +904,28 @@ public class VisualizationService {
     private static final String TJD_RES_SEGREGATINGSITES = "sg";
     private static final String TJD_RES_TAJIMAD = "tjd";
 
-    private List<BasicDBObject> buildTajimaDQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildTajimaDQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
 //		System.err.println("Tajima : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
-    	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+    	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+		if (!workWithSamples)
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
 
-        final int sampleSize = 2*selectedIndividuals.size();
+        final int sampleSize = 2*selectedMaterial.size();
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++) {
+        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-		}
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
         double a1 = 0, a2 = 0;
@@ -994,11 +941,12 @@ public class VisualizationService {
         double e1 = c1 / a1;
         double e2 = c2 / (a1*a1 + a2);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
     	String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
 
     	// Stage 14 : Get the genotypes needed
-    	BasicDBList genotypePaths = getFullPathToGenotypes(sModule, projId, selectedIndividuals, individualToSampleListMap);
+    	BasicDBList genotypePaths = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals);
     	BasicDBObject genotypeProjection = new BasicDBObject();
     	genotypeProjection.put(refPosPath, 1);
     	genotypeProjection.put(TJD_S14_GENOTYPES, genotypePaths);
@@ -1096,71 +1044,54 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private List<BasicDBObject> buildMafQuery(MgdbDensityRequest gdr, boolean useTempColl) throws ObjectNotFoundException {
+    private List<BasicDBObject> buildMafQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
 //		System.err.println("MAF : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
-    	String info[] = Helper.getInfoFromId(gdr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+    	Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gdr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        TreeMap<String, List<GenotypingSample>> individualToSampleListMap = new TreeMap<String, List<GenotypingSample>>();
-        individualToSampleListMap.putAll(MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals));
-
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+		if (!workWithSamples)
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
         int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
         List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++) {
+        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
 			intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-		}
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualToSampleListMap, true);
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
 
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        GenotypingProject genotypingProject = mongoTemplate.findById(Integer.valueOf(projId), GenotypingProject.class);
+        List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
+        Integer[] ploidyLevels = genotypingProjects.stream().map(pj -> pj.getPloidyLevel()).distinct().toArray(Integer[]::new);
+        if (ploidyLevels.length > 1)
+        	throw new Exception("Inconsistent ploidy levels among projects " + info[1] + " in database " + info[0]);
 
-        boolean fIsMultiRunProject = genotypingProject.getRuns().size() > 1;
-        boolean fGotMultiSampleIndividuals = (individualToSampleListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-        
-        BasicDBObject vars = new BasicDBObject("gt", getFullPathToGenotypes(sModule, projId, selectedIndividuals, individualToSampleListMap));
+        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
         BasicDBObject in = new BasicDBObject();
         BasicDBObject subIn = new BasicDBObject();
     	
-        BasicDBObject inObj;
-        if (fIsMultiRunProject) {
-            BasicDBList condList = new BasicDBList();
-            BasicDBObject addObject = new BasicDBObject("$add", Arrays.asList(1, new BasicDBObject("$cmp", Arrays.asList(new BasicDBObject("$arrayElemAt", Arrays.asList("$$g", 0)), genotypingProject.getPloidyLevel() == 1 ? "1" : "0/1"))));
-            if (!fGotMultiSampleIndividuals)
-                inObj = addObject;    // no need to make sure all genotypes for each individual are equal because there's only one sample per individual 
-            else {
-                condList.add(new BasicDBObject("$eq", new Object[] {new BasicDBObject("$size", "$$g"), 1})); // if we have several distinct genotypes for this individual then we treat it as missing data (no alt allele to take into account)
-                condList.add(addObject);
-                condList.add(0);
-                inObj = new BasicDBObject("$cond", condList);
-            }
-        }
-        else
-            inObj = new BasicDBObject("$add", Arrays.asList(1, new BasicDBObject("$cmp", Arrays.asList("$$g", genotypingProject.getPloidyLevel() == 1 ? "1" : "0/1"))));
+        BasicDBObject inObj = new BasicDBObject("$add", Arrays.asList(1, new BasicDBObject("$cmp", Arrays.asList("$$g", ploidyLevels[0] == 1 ? "1" : "0/1"))));
         in.put("a", new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", inObj))));
-
-        if (fIsMultiRunProject)
-            in.put("m", new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$abs", new BasicDBObject("$cmp", new Object[] {new BasicDBObject("$size", "$$g"), 1}))))));
-        else
-            in.put("m", new BasicDBObject("$subtract", Arrays.asList(individualToSampleListMap.size(), new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$max", Arrays.asList(0, new BasicDBObject("$cmp", Arrays.asList("$$g", null))))))))));
+        in.put("m", new BasicDBObject("$subtract", Arrays.asList(individualOrSampleToCallSetListMap.size(), new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$max", Arrays.asList(0, new BasicDBObject("$cmp", Arrays.asList("$$g", null))))))))));
 
         BasicDBList condList = new BasicDBList(), divideList = new BasicDBList();
-        condList.add(new BasicDBObject("$eq", new Object[] {"$$m", individualToSampleListMap.size()}));
+        condList.add(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}));
         condList.add(null);
-        condList.add(new BasicDBObject("$subtract", new Object[] {individualToSampleListMap.size(), "$$m"}));
+        condList.add(new BasicDBObject("$subtract", new Object[] {individualOrSampleToCallSetListMap.size(), "$$m"}));
         divideList.add(new BasicDBObject("$multiply", new Object[] {"$$a", 50}));
         divideList.add(new BasicDBObject("$cond", condList));
 
         subIn.put("f", new BasicDBObject("$divide", divideList));
-        subIn.put("n", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", new Object[] {"$$m", individualToSampleListMap.size()}), 0, 1)));
+        subIn.put("n", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}), 0, 1)));
 
         BasicDBObject subVars = in;
         BasicDBObject subLet = new BasicDBObject("vars", subVars);
@@ -1183,53 +1114,41 @@ public class VisualizationService {
     	return pipeline;
     }
 
-    private BasicDBList getFullPathToGenotypes(String sModule, int projId, Collection<String> selectedIndividuals, Map<String, List<GenotypingSample>> individualToSampleListMap){
+    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean fGotMultiCallSetIndividuals) {
     	BasicDBList result = new BasicDBList();
-    	Iterator<String> indIt = selectedIndividuals.iterator();
+    	Iterator<String> indIt = selectedMaterial.iterator();
         while (indIt.hasNext()) {
-            String individual = indIt.next();
-            List<GenotypingSample> individualSamples = individualToSampleListMap.get(individual);
-
-            int finalSample = Integer.MAX_VALUE;
-            for (int k=0; k<individualSamples.size(); k++) {    // this loop is executed only once for single-run projects
-                GenotypingSample individualSample = individualSamples.get(k);
-                if (individualSample.getId() < finalSample)
-                	finalSample = individualSample.getId();
+            String individualOrSample = indIt.next(), materialRefToUse = null;
+            if (fGotMultiCallSetIndividuals)
+            	materialRefToUse = individualOrSample;
+            else {
+	            List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
+	            for (int k=0; k<callSets.size(); k++) {    // this loop is executed only once for single-run projects
+	            	Callset callset = callSets.get(k);
+	            	materialRefToUse = "" + callset.getId();
+	            	break;
+	            }
             }
-
-            String pathToGT = finalSample + "." + SampleGenotype.FIELDNAME_GENOTYPECODE;
+            String pathToGT = materialRefToUse + "." + TJD_S18_GENOTYPE;
             String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
             result.add(fullPathToGT);
         }
         return result;
     }
 
-	public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr) throws Exception {
-		return selectionDensity(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
-
-	public Map<Long, Double> selectionFst(MgdbDensityRequest gdr) throws Exception {
-		return selectionFst(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
-
-	public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr) throws Exception {
-		return selectionTajimaD(gdr, AbstractTokenManager.readToken(gdr.getRequest()));
-	}
-	
-    public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token) throws Exception {
+    public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token, boolean workWithSamples) throws Exception {
 //		System.err.println(gvfpr.getVcfField() + " : " + gvfpr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
         long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gvfpr.getVariantSetId(), 2);
-        String sModule = info[0];
-        int projId = Integer.parseInt(info[1]);
+        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
         ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating plot data for " + gvfpr.getVcfField() +  " field regarding " + (gvfpr.getDisplayedVariantType() != null ? gvfpr.getDisplayedVariantType() + " " : "") + "variants on sequence " + gvfpr.getDisplayedSequence()});
         ProgressIndicator.registerProgressIndicator(progress);
 
-        final MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(sModule, AbstractTokenManager.readToken(gvfpr.getRequest()), false, false, false);
+        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gvfpr.getRequest()), false, false, false);
         long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
         
 	    VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gvfpr, true);
@@ -1254,43 +1173,29 @@ public class VisualizationService {
 		final long rangeMin = gvfpr.getDisplayedRangeMin();
 		final ProgressIndicator finalProgress = progress;
 
-    	List<String> selectedIndividuals = new ArrayList<String>();
+		
+    	HashSet<String> selectedMaterial = new HashSet<String>();
     	List<List<String>> callsetIds = gvfpr.getAllCallSetIds();
 		for (int i = 0; i < callsetIds.size(); i++)
-			selectedIndividuals.addAll(callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(sModule, projId) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+			selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
 
-        List<Integer>[] sampleIDsGroupedBySortedIndividuals = new List[selectedIndividuals.size()];
-        TreeMap<String, ArrayList<GenotypingSample>> samplesByIndividual = MgdbDao.getSamplesByIndividualForProject(sModule, projId, selectedIndividuals);
-        int k = 0;
-        for (String ind : selectedIndividuals) {
-        	sampleIDsGroupedBySortedIndividuals[k] = samplesByIndividual.get(ind).stream().map(sp -> sp.getId()).collect(Collectors.toList());
-            k++;
-		}
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+		if (!workWithSamples)
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+		else 
+			individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
 
-        ExecutorService executor = MongoTemplateManager.getExecutor(sModule);
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
         
-        String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-		for (int i=0; i<gvfpr.getDisplayedRangeIntervalCount(); i++)
-		{
-			List<Criteria> crits = new ArrayList<Criteria>();
-			crits.add(Criteria.where(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE).is(gvfpr.getDisplayedSequence()));
-			if (gvfpr.getDisplayedVariantType() != null)
-				crits.add(Criteria.where(VariantData.FIELDNAME_TYPE).is(gvfpr.getDisplayedVariantType()));
-			String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-			crits.add(Criteria.where(startSitePath).gte(gvfpr.getDisplayedRangeMin() + (i*intervalSize)));
-			if (i < gvfpr.getDisplayedRangeIntervalCount() - 1)
-				crits.add(Criteria.where(startSitePath).lt(gvfpr.getDisplayedRangeMin() + ((i+1)*intervalSize)));
-			else
-				crits.add(Criteria.where(startSitePath).lte(gvfpr.getDisplayedRangeMax()));
-
-            final Query query = new Query(new Criteria().andOperator(crits.toArray(new Criteria[crits.size()])));
-            final long chunkIndex = i;
+		List<BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+		for (int i=0; i<intervalQueries.size(); i++) {
+            final int chunkIndex = i;
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted())
                     {
-                    	List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", query.getQueryObject(), String.class).into(new ArrayList<>());	// oddly, it is faster to run a pre-query than to use $lookup
+                    	List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", intervalQueries.get(chunkIndex), String.class).into(new ArrayList<>());	// oddly, it is faster to run a pre-query than to use $lookup
 	                    final ArrayList<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
             			BasicDBList matchList = new BasicDBList();
@@ -1301,7 +1206,7 @@ public class VisualizationService {
 
                         BasicDBObject projectStage = new BasicDBObject("$project", new BasicDBObject("r", new BasicDBObject("$let", new BasicDBObject()
                         	    .append("vars", new BasicDBObject("values", new BasicDBObject("$filter", new BasicDBObject()
-                                        .append("input", Arrays.stream(sampleIDsGroupedBySortedIndividuals).flatMap(List::stream).map(spId -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + spId + "." + SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField()).toArray())
+                                        .append("input", individualOrSampleToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + cs.getId() + "." + SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField()).toArray())
                                         .append("as", "val")
                                         .append("cond", new BasicDBObject("$ne", Arrays.asList("$$val", null)))
                         	    	)))
@@ -1352,36 +1257,37 @@ public class VisualizationService {
         return new TreeMap<Long, Integer>(result);
     }
 
-	public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr) throws Exception {
-		return selectionVcfFieldPlotData(gvfpr, AbstractTokenManager.readToken(gvfpr.getRequest()));
-	}
-
-	public String igvData(MgdbDensityRequest gr, String token) throws Exception {
+	public String igvData(MgdbDensityRequest mdr, String token, boolean workWithSamples) throws Exception {
 		long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gr.getVariantSetId(), 2);
+    	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(mdr.getVariantSetId());
         
         String processId = "igvViz_" + token;
 		final ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Preparing data for visualization"});
 		ProgressIndicator.registerProgressIndicator(progress);
-		int projId = Integer.parseInt(info[1]);
 
-		boolean fNoGenotypesRequested = gr.getAllCallSetIds().isEmpty() || (gr.getAllCallSetIds().size() == 1 && gr.getAllCallSetIds().get(0).isEmpty());
-		Collection<GenotypingSample> samples = fNoGenotypesRequested ? new ArrayList<>() :  MgdbDao.getSamplesForProject(info[0], projId, gr.getCallSetIds().stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toList()));
+		Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();		
+		List<List<String>> allCallsetIDs = mdr.getAllCallSetIds();
+		
+		boolean fNoGenotypesRequested = allCallsetIDs.isEmpty() || (allCallsetIDs.size() == 1 && allCallsetIDs.get(0).isEmpty());
+		Collection materialToExport = mdr.getCallSetIds().stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toList());
+		List<Callset> callSetsToExport = workWithSamples 
+        		? ((Collection<ArrayList<Callset>>) MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, materialToExport).values()).stream().flatMap(Collection::stream).toList()
+        		: ((Collection<ArrayList<Callset>>) MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, materialToExport).values()).stream().flatMap(Collection::stream).toList();
+
 		MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         MongoCollection<Document> tempVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], token, false, false, false);
         boolean fWorkingOnTempColl = tempVarColl.countDocuments() > 0;
         
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gr, true);
-        BasicDBList variantQueryDBList = (fWorkingOnTempColl ? varQueryWrapper.getBareQueries() : varQueryWrapper.getVariantDataQueries()).iterator().next();
-
+        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(mdr, true);
+        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (!fWorkingOnTempColl ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+        
 		MongoCollection<Document> collWithPojoCodec = mongoTemplate.getDb().withCodecRegistry(ExportManager.pojoCodecRegistry).getCollection(fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : mongoTemplate.getCollectionName(fNoGenotypesRequested ? VariantData.class : VariantRunData.class));
 		StringBuffer sb = new StringBuffer();
         
 		if (fNoGenotypesRequested) {	// simplest case where we're not returning genotypes: querying on variants collection will be faster
-			Map<String, Integer> individualPositions = new LinkedHashMap<>();
-			for (String ind : samples.stream().map(gs -> gs.getIndividual()).distinct().sorted(new AlphaNumericComparator<String>()).collect(Collectors.toList()))
-				individualPositions.put(ind, individualPositions.size());
+			Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
 			String header = "variant\talleles\tchrom\tpos";
 			sb.append(header);
@@ -1389,7 +1295,7 @@ public class VisualizationService {
 	            sb.append("\t" + individual);
 	        sb.append("\n");
 
-			MongoCursor<VariantData> varIt = collWithPojoCodec.find(new BasicDBObject("$and", variantQueryDBList), VariantData.class).projection(new BasicDBObject(VariantData.FIELDNAME_KNOWN_ALLELES, 1).append(Assembly.getThreadBoundVariantRefPosPath(), 1)).iterator();
+			MongoCursor<VariantData> varIt = collWithPojoCodec.find(variantQueryForTargetCollection, VariantData.class).projection(new BasicDBObject(VariantData.FIELDNAME_KNOWN_ALLELES, 1).append(Assembly.getThreadBoundVariantRefPosPath(), 1)).iterator();
 			while (varIt.hasNext()) {
 				VariantData variant = varIt.next();
             	ReferencePosition rp = variant.getReferencePosition(Assembly.getThreadBoundAssembly());
@@ -1397,32 +1303,35 @@ public class VisualizationService {
 			}
 		}
 		else {
-			final Map<Integer, String> sampleIdToIndividualMap = new HashMap<>();
-			for (GenotypingSample gs : samples)
-				sampleIdToIndividualMap.put(gs.getId(), gs.getIndividual());
-	
-		    Map<String, Collection<String>> individualsByPop = new HashMap<>();
+//            if (workWithSamples)
+//            	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
+//            		sp.setDetached(true);
+//			final Map<Integer, String> callSetIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
+	        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+	        for (Callset cs : callSetsToExport)
+	        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
+	        
+		    Map<String, Collection<String>> bioEntitiesByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();
-		    List<List<String>> callsetIds = gr.getAllCallSetIds();
+		    List<List<String>> callsetIds = mdr.getAllCallSetIds();
 		    for (int i = 0; i < callsetIds.size(); i++) {
-		        individualsByPop.put(gr.getGroupName(i), callsetIds.get(i).isEmpty() ? MgdbDao.getProjectIndividuals(info[0], projId) /* no selection means all selected */ : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-		        annotationFieldThresholdsByPop.put(gr.getGroupName(i), gr.getAnnotationFieldThresholds(i));
+		        bioEntitiesByPop.put(mdr.getGroupName(i), callsetIds.get(i).isEmpty() /* no selection means all selected */ ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+		        annotationFieldThresholdsByPop.put(mdr.getGroupName(i), mdr.getAnnotationFieldThresholds(i));
 		    }
-	
+		    
 			// count variants to display
-			BasicDBList variantLevelQuery = !variantQueryDBList.isEmpty() ? variantQueryDBList : new BasicDBList();
 	    	List<BasicDBObject> countPipeline = new ArrayList<>();
-	        if (!variantLevelQuery.isEmpty())
-	        	countPipeline.add(new BasicDBObject("$match", new BasicDBObject("$and", variantLevelQuery)));
+	        if (!variantQueryForTargetCollection.isEmpty())
+	        	countPipeline.add(new BasicDBObject("$match", variantQueryForTargetCollection));
 	    	countPipeline.add(new BasicDBObject("$count", "count"));
 	    	MongoCursor<Document> countCursor = (fWorkingOnTempColl ? collWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class))).aggregate(countPipeline, Document.class).collation(IExportHandler.collationObj).iterator();
-	
+
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), individualsByPop, sampleIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryDBList, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, samples);
+			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), bioEntitiesByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, callSetsToExport);
 			sb.append(baos.toString());
 			progress.markAsComplete();
-			LOG.debug("igvData processed range " + gr.getDisplayedSequence() + ":" + gr.getDisplayedRangeMin() + "-" + gr.getDisplayedRangeMax() + " for " + new HashSet<>(sampleIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
+			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(callSetIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
 		}
 		
 		return sb.toString();
