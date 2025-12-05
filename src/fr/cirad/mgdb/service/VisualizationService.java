@@ -45,6 +45,7 @@ import org.springframework.stereotype.Component;
 
 import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
+import com.mongodb.MongoCommandException;
 import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
@@ -55,7 +56,6 @@ import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
@@ -295,124 +295,129 @@ public class VisualizationService {
             		if (finalProgress.isAborted())
             			return;
 
-            		Iterator<Document> it = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).iterator();
-
-            		if (finalProgress.isAborted())
-            			return;
-
-            		/* Structure of a resulting document : {
-        			 * 		_id: ...,
-        			 * 		alleleMax: 1,
-        			 * 		populations: [
-        			 * 			{sampleSize: 100, alleles: [
-        			 * 				{allele: 0, alleleFrequency: 0.45, heterozygoteFrequency: 0.31},
-        			 * 				{allele: 1, alleleFrequency: 0.55, heterozygoteFrequency: 0.31},
-        			 * 			]},
-        			 * 			{...}
-        			 * 		]
-        			 * }
-        			 */
-
-        			double weightedFstSum = 0;
-        			double fstWeight = 0;
-        			int partialCount = 0;
-
-        			while (it.hasNext()) {
-        				partialCount++;
-        				Document variantResult = it.next();
-
-        				List<Document> populations = variantResult.getList(FST_RES_POPULATIONS, Document.class);
-        				if (populations.size() < 2) {
-        					// Can not compute Fst with a single population
-        					// One of the populations has no valid data
-        					continue;
-        				}
-        				int numPopulations = populations.size();  // r : Number of samples to consider
-        				int numAlleles = variantResult.getInteger(FST_RES_ALLELEMAX) + 1;
-
-        				// Transposition to [allele][sample] instead of the original [sample][allele] is important to simplify further computations
-        				int[] sampleSizes = new int[numPopulations];  // n_i = sampleSizes[population] : Size of the population samples (with missing data filtered out)
-        				double[][] alleleFrequencies = new double[numAlleles][numPopulations];  // p_i = alleleFrequencies[allele][population] : Allele frequency in the given population
-        				double[][] hetFrequencies = new double[numAlleles][numPopulations];  // h_i = hetFrequencies[allele][population] : Proportion of heterozygotes with the given allele in the given population
-        				//double[] averageAlleleFrequencies = new double[numAlleles];  // p¯ = averageAlleleFrequencies[allele] : Average frequency of the allele over all populations
-    					//double[] alleleVariance = new double[numAlleles];  // s² = alleleVariance[allele] : Variance of the allele frequency over the populations
-    					//double[] averageHetFrequencies = new double[numAlleles];  // h¯ = averageHetFrequencies : Proportion of heterozygotes with the given allele over all populations
-
-    					//Arrays.fill(averageAlleleFrequencies, 0);
-    					//Arrays.fill(alleleVariance, 0);
-    					//Arrays.fill(averageHetFrequencies, 0);
-
-    					for (int allele = 0; allele < numAlleles; allele++) {
-    						Arrays.fill(alleleFrequencies[allele], 0);
-    						Arrays.fill(hetFrequencies[allele], 0);
-    					}
-
-    					int popIndex = 0;
-        				for (Document populationResult : populations) {
-        					int sampleSize = populationResult.getInteger(FST_RES_SAMPLESIZE);
-        					List<Document> alleles = populationResult.getList(FST_RES_ALLELES, Document.class);
-
-        					for (Document alleleResult : alleles) {
-        						int allele = alleleResult.getInteger(FST_RES_ALLELEID);
-        						alleleFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_ALLELEFREQUENCY);
-        						hetFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_HETEROZYGOTEFREQUENCY);
-        					}
-
-        					sampleSizes[popIndex] = sampleSize;
-        					popIndex += 1;
-        				}
-
-        				double averageSampleSize = (double)IntStream.of(sampleSizes).sum() / numPopulations;  // n¯ : Average sample size
-        				double totalSize = averageSampleSize * numPopulations;  // r × n¯
-        				double sampleSizeCorrection = (totalSize - IntStream.of(sampleSizes).mapToDouble(size -> size*size / totalSize).sum() / (numPopulations - 1));  // n_c
-
-        				for (int allele = 0; allele < numAlleles; allele++) {
-        					// Compute weighted averages of allele frequencies (p¯) and heterozygote proportions (h¯)
-        					double averageAlleleFrequency = 0.0;
-        					double averageHetFrequency = 0.0;
-        					for (popIndex = 0; popIndex < numPopulations; popIndex++) {
-        						averageAlleleFrequency += sampleSizes[popIndex] * alleleFrequencies[allele][popIndex] / totalSize;
-        						averageHetFrequency += sampleSizes[popIndex] * hetFrequencies[allele][popIndex] / totalSize;
-        					}
-       						averageAlleleFrequency = new BigDecimal(averageAlleleFrequency).setScale(15, RoundingMode.CEILING).doubleValue();	// round it up because it may look like 0.999999999 but actually mean 1
-
-        					// Compute allele frequency variance (s²)
-        					double alleleVariance = 0.0;
-        					for (popIndex = 0; popIndex < numPopulations; popIndex++) {
-        						alleleVariance += sampleSizes[popIndex] * Math.pow(alleleFrequencies[allele][popIndex] - averageAlleleFrequency, 2) / (averageSampleSize * (numPopulations - 1));
-        					}
-
-        					// a = (n¯/nc) × (s² - (1 / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯/4))
-							double populationVariance = (
-									(averageSampleSize / sampleSizeCorrection) * (
-										alleleVariance - (1 / (averageSampleSize - 1)) * (
-											averageAlleleFrequency * (1 - averageAlleleFrequency) -
-											(numPopulations - 1) * alleleVariance / numPopulations -
-											averageHetFrequency / 4
+            		try {
+	            		Iterator<Document> it = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).iterator();
+	
+	            		if (finalProgress.isAborted())
+	            			return;
+	
+	            		/* Structure of a resulting document : {
+	        			 * 		_id: ...,
+	        			 * 		alleleMax: 1,
+	        			 * 		populations: [
+	        			 * 			{sampleSize: 100, alleles: [
+	        			 * 				{allele: 0, alleleFrequency: 0.45, heterozygoteFrequency: 0.31},
+	        			 * 				{allele: 1, alleleFrequency: 0.55, heterozygoteFrequency: 0.31},
+	        			 * 			]},
+	        			 * 			{...}
+	        			 * 		]
+	        			 * }
+	        			 */
+	
+	        			double weightedFstSum = 0;
+	        			double fstWeight = 0;
+	        			int partialCount = 0;
+	
+	        			while (it.hasNext()) {
+	        				partialCount++;
+	        				Document variantResult = it.next();
+	
+	        				List<Document> populations = variantResult.getList(FST_RES_POPULATIONS, Document.class);
+	        				if (populations.size() < 2) {
+	        					// Can not compute Fst with a single population
+	        					// One of the populations has no valid data
+	        					continue;
+	        				}
+	        				int numPopulations = populations.size();  // r : Number of samples to consider
+	        				int numAlleles = variantResult.getInteger(FST_RES_ALLELEMAX) + 1;
+	
+	        				// Transposition to [allele][sample] instead of the original [sample][allele] is important to simplify further computations
+	        				int[] sampleSizes = new int[numPopulations];  // n_i = sampleSizes[population] : Size of the population samples (with missing data filtered out)
+	        				double[][] alleleFrequencies = new double[numAlleles][numPopulations];  // p_i = alleleFrequencies[allele][population] : Allele frequency in the given population
+	        				double[][] hetFrequencies = new double[numAlleles][numPopulations];  // h_i = hetFrequencies[allele][population] : Proportion of heterozygotes with the given allele in the given population
+	        				//double[] averageAlleleFrequencies = new double[numAlleles];  // p¯ = averageAlleleFrequencies[allele] : Average frequency of the allele over all populations
+	    					//double[] alleleVariance = new double[numAlleles];  // s² = alleleVariance[allele] : Variance of the allele frequency over the populations
+	    					//double[] averageHetFrequencies = new double[numAlleles];  // h¯ = averageHetFrequencies : Proportion of heterozygotes with the given allele over all populations
+	
+	    					//Arrays.fill(averageAlleleFrequencies, 0);
+	    					//Arrays.fill(alleleVariance, 0);
+	    					//Arrays.fill(averageHetFrequencies, 0);
+	
+	    					for (int allele = 0; allele < numAlleles; allele++) {
+	    						Arrays.fill(alleleFrequencies[allele], 0);
+	    						Arrays.fill(hetFrequencies[allele], 0);
+	    					}
+	
+	    					int popIndex = 0;
+	        				for (Document populationResult : populations) {
+	        					int sampleSize = populationResult.getInteger(FST_RES_SAMPLESIZE);
+	        					List<Document> alleles = populationResult.getList(FST_RES_ALLELES, Document.class);
+	
+	        					for (Document alleleResult : alleles) {
+	        						int allele = alleleResult.getInteger(FST_RES_ALLELEID);
+	        						alleleFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_ALLELEFREQUENCY);
+	        						hetFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_HETEROZYGOUSFREQUENCY);
+	        					}
+	
+	        					sampleSizes[popIndex] = sampleSize;
+	        					popIndex += 1;
+	        				}
+	
+	        				double averageSampleSize = (double)IntStream.of(sampleSizes).sum() / numPopulations;  // n¯ : Average sample size
+	        				double totalSize = averageSampleSize * numPopulations;  // r × n¯
+	        				double sampleSizeCorrection = (totalSize - IntStream.of(sampleSizes).mapToDouble(size -> size*size / totalSize).sum() / (numPopulations - 1));  // n_c
+	
+	        				for (int allele = 0; allele < numAlleles; allele++) {
+	        					// Compute weighted averages of allele frequencies (p¯) and heterozygote proportions (h¯)
+	        					double averageAlleleFrequency = 0.0;
+	        					double averageHetFrequency = 0.0;
+	        					for (popIndex = 0; popIndex < numPopulations; popIndex++) {
+	        						averageAlleleFrequency += sampleSizes[popIndex] * alleleFrequencies[allele][popIndex] / totalSize;
+	        						averageHetFrequency += sampleSizes[popIndex] * hetFrequencies[allele][popIndex] / totalSize;
+	        					}
+	       						averageAlleleFrequency = new BigDecimal(averageAlleleFrequency).setScale(15, RoundingMode.CEILING).doubleValue();	// round it up because it may look like 0.999999999 but actually mean 1
+	
+	        					// Compute allele frequency variance (s²)
+	        					double alleleVariance = 0.0;
+	        					for (popIndex = 0; popIndex < numPopulations; popIndex++) {
+	        						alleleVariance += sampleSizes[popIndex] * Math.pow(alleleFrequencies[allele][popIndex] - averageAlleleFrequency, 2) / (averageSampleSize * (numPopulations - 1));
+	        					}
+	
+	        					// a = (n¯/nc) × (s² - (1 / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯/4))
+								double populationVariance = (
+										(averageSampleSize / sampleSizeCorrection) * (
+											alleleVariance - (1 / (averageSampleSize - 1)) * (
+												averageAlleleFrequency * (1 - averageAlleleFrequency) -
+												(numPopulations - 1) * alleleVariance / numPopulations -
+												averageHetFrequency / 4
+											)
 										)
-									)
-								);
-
-							// b = (n¯ / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯(2n¯-1)/4n¯)
-							double individualVariance = (averageSampleSize / (averageSampleSize - 1)) * (
-									averageAlleleFrequency * (1 - averageAlleleFrequency) -
-									alleleVariance * (numPopulations-1) / numPopulations -
-									averageHetFrequency * (2*averageSampleSize - 1) / (4 * averageSampleSize)
-								);
-
-							// c = h¯/2
-							double gameteVariance = averageHetFrequency / 2;
-							
-							if (!Double.isNaN(populationVariance) && !Double.isNaN(individualVariance) && !Double.isNaN(gameteVariance)) {
-								weightedFstSum += populationVariance;
-								fstWeight += populationVariance + individualVariance + gameteVariance;
-							}
-        				}
-        			}
-
-        			result.put(rangeMin + (chunkIndex*intervalSize), weightedFstSum / fstWeight);
-        			finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
-        			nTotalTreatedVariantCount.addAndGet(partialCount);
+									);
+	
+								// b = (n¯ / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯(2n¯-1)/4n¯)
+								double individualVariance = (averageSampleSize / (averageSampleSize - 1)) * (
+										averageAlleleFrequency * (1 - averageAlleleFrequency) -
+										alleleVariance * (numPopulations-1) / numPopulations -
+										averageHetFrequency * (2*averageSampleSize - 1) / (4 * averageSampleSize)
+									);
+	
+								// c = h¯/2
+								double gameteVariance = averageHetFrequency / 2;
+								
+								if (!Double.isNaN(populationVariance) && !Double.isNaN(individualVariance) && !Double.isNaN(gameteVariance)) {
+									weightedFstSum += populationVariance;
+									fstWeight += populationVariance + individualVariance + gameteVariance;
+								}
+	        				}
+	        			}
+	
+	        			result.put(rangeMin + (chunkIndex*intervalSize), weightedFstSum / fstWeight);
+	        			finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+	        			nTotalTreatedVariantCount.addAndGet(partialCount);
+            		}
+            		catch (MongoCommandException mce) {
+            			progress.setError("Error during Fst calculation: " + mce.getErrorMessage());
+            		}
         		}
             };
 
@@ -627,20 +632,21 @@ public class VisualizationService {
 
     private static final String GENOTYPE_DATA_S2_DATA = "dt";
     private static final String GENOTYPE_DATA_S5_SPKEYVAL = "sk";
-    private static final String GENOTYPE_DATA_S8_SAMPLE = "sa";
-    private static final String GENOTYPE_DATA_S7_SAMPLEID = "si";
+    private static final String GENOTYPE_DATA_S8_BIO_ENTITY = "be";
+    private static final String GENOTYPE_DATA_S7_CALLSET_ID = "cs";
     private static final String GENOTYPE_DATA_S7_GENOTYPE = "gy";
     private static final String GENOTYPE_DATA_S7_POSITION = "ss";
     private static final String GENOTYPE_DATA_S10_VARIANTID = "vi";
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
-    private static final String GENOTYPE_DATA_S10_SAMPLEINDEX = "sx";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals) throws Exception {
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> bioEntityToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals, boolean workWithSamples) throws Exception {
     	String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
+        boolean fWillNeedToMergeObjects = projIDs.length > 1;	// if multiple projects or runs, we will need to merge objects to have just one record per variant
+        if (!fWillNeedToMergeObjects && bioEntityToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> cs.getRun()).distinct().count() > 1)
+			fWillNeedToMergeObjects = true;	// even in a single project, multiple runs involved
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-
     	List<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
     	// Stage 1 : placeholder for initial match stage
@@ -663,72 +669,59 @@ public class VisualizationService {
     	}
 
     	if (fGotMultiCallSetIndividuals) {
-    		if (useTempColl) {
-	    		// Stage 5 : Convert samples to an array
-	    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
-    		} else {
-    			// Stage 5 : Convert samples to an array
-	    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
-    		}
+    		// Stage 5 : Convert samples to an array
+	    	pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + (useTempColl ? GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES : VariantRunData.FIELDNAME_SAMPLEGENOTYPES)))));
 
     		// Stage 6 : Unwind samples
     		pipeline.add(new BasicDBObject("$unwind", "$" + GENOTYPE_DATA_S5_SPKEYVAL));
 
     		// Stage 7 : Convert key and value
     		BasicDBObject spkeyval = new BasicDBObject();
-    		spkeyval.put(GENOTYPE_DATA_S7_SAMPLEID, new BasicDBObject("$toInt", "$" + GENOTYPE_DATA_S5_SPKEYVAL + ".k"));
+    		spkeyval.put(GENOTYPE_DATA_S7_CALLSET_ID, new BasicDBObject("$toInt", "$" + GENOTYPE_DATA_S5_SPKEYVAL + ".k"));
     		spkeyval.put(GENOTYPE_DATA_S7_GENOTYPE, "$" + GENOTYPE_DATA_S5_SPKEYVAL + ".v.gt");
     		if (keepPosition)
     			spkeyval.put(GENOTYPE_DATA_S7_POSITION, "$" + Assembly.getThreadBoundVariantRefPosPath() + ".ss");
     		pipeline.add(new BasicDBObject("$project", spkeyval));
 
-    		// Stage 8 : Lookup samples
-    		BasicDBObject sampleLookup = new BasicDBObject("from", mongoTemplate.getCollectionName(GenotypingSample.class))
-		        .append("let", new BasicDBObject("localSi", "$" + GENOTYPE_DATA_S7_SAMPLEID))
-		        .append("pipeline", Arrays.asList(
-		            // Stage 1: match where $$localSi is in cs._id
-		            new BasicDBObject("$match",
-		                new BasicDBObject("$expr",
-		                    new BasicDBObject("$in", Arrays.asList("$$localSi", "$" + GenotypingSample.FIELDNAME_CALLSETS + "._id"))
-		                )
-		            ),
-		            // Stage 2: unwind cs
-		            new BasicDBObject("$unwind", "$" + GenotypingSample.FIELDNAME_CALLSETS),
-		            // Stage 3: match exact cs._id
-		            new BasicDBObject("$match",
-		                new BasicDBObject("$expr",
-		                    new BasicDBObject("$eq", Arrays.asList("$" + GenotypingSample.FIELDNAME_CALLSETS + "._id", "$$localSi"))
-		                )
-		            ),
-		            // Stage 4: project cs and in
-		            new BasicDBObject("$project",
-		                new BasicDBObject("_id", 0)
-		                    .append(GenotypingSample.FIELDNAME_CALLSETS, 1)
-		                    .append(GenotypingSample.FIELDNAME_INDIVIDUAL, 1)
-		            )
-		        ))
-		        .append("as", GENOTYPE_DATA_S8_SAMPLE);
-    		pipeline.add(new BasicDBObject("$lookup", sampleLookup));
+			// Stage 8 : Keep only the callsets we are interested in    		
+    		pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S7_CALLSET_ID, new BasicDBObject("$in", bioEntityToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> cs.getId()).toList()))));
     		
-    		// Stage 9 : Get first sample (shouldn't get more than one anyway)
-    		pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(GENOTYPE_DATA_S8_SAMPLE, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S8_SAMPLE))));
+		    // Stage 9 : Create bio-entity field using $switch
+    	    BasicDBList branches = new BasicDBList();
+    	    for (Map.Entry<String, List<Callset>> entry : bioEntityToCallSetListMap.entrySet()) {
+    	        List<Callset> callsets = entry.getValue();
+    	        for (Callset callset : callsets) {	// account for each callset belonging to this bio-entity
+    	            BasicDBObject branch = new BasicDBObject()
+    	                .append("case", new BasicDBObject("$eq", new Object[]{"$" + GENOTYPE_DATA_S7_CALLSET_ID, callset.getId()}))
+    	                .append("then", entry.getKey());
+    	            
+    	            branches.add(branch);
+    	        }
+    	    }
+    	    BasicDBObject switchExpr = new BasicDBObject()
+    	        .append("branches", branches)
+    	        .append("default", null);
+    	    pipeline.add(new BasicDBObject("$addFields",new BasicDBObject(GENOTYPE_DATA_S8_BIO_ENTITY , new BasicDBObject("$switch", switchExpr))));
 
-    		// Stage 10 : Regroup individual runs
+    	    
+    		// Stage 10 : Ensure that only documents where this field is actually a valid string value (not null, not missing) proceed to the grouping stages
+    		pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S8_BIO_ENTITY , new BasicDBObject("$ne", null))));
+
+    		// Stage 11 : Regroup individual runs
     		BasicDBObject individualGroup = new BasicDBObject();
     		BasicDBObject individualGroupId = new BasicDBObject();
     		individualGroupId.put(GENOTYPE_DATA_S10_VARIANTID, "$_id." + VariantRunDataId.FIELDNAME_VARIANT_ID);
-    		individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_INDIVIDUAL);
+    		individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_BIO_ENTITY );
     		individualGroup.put("_id", individualGroupId);
     		individualGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$addToSet", "$" + GENOTYPE_DATA_S7_GENOTYPE));
-    		individualGroup.put(GENOTYPE_DATA_S10_SAMPLEINDEX, new BasicDBObject("$min", "$" + GENOTYPE_DATA_S8_SAMPLE + "." + GenotypingSample.FIELDNAME_CALLSETS + "._id"));
     		if (keepPosition)
     			individualGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", individualGroup));
 
-    		// Stage 11 : Weed out incoherent genotypes
+    		// Stage 12 : Weed out incoherent genotypes
     		pipeline.add(new BasicDBObject("$match", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$size", 1))));
 
-    		// Stage 12 : Group back by variant
+    		// Stage 13 : Group back by variant
     		BasicDBObject variantGroup = new BasicDBObject();
     		variantGroup.put("_id", "$_id");
     		BasicDBObject spObject = new BasicDBObject();
@@ -739,8 +732,8 @@ public class VisualizationService {
     			variantGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", variantGroup));
 
-    		// Stage 13 : Convert back to sp object
-    		pipeline.add(new BasicDBObject("$project", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
+//    		// Stage 14 : Convert back to sp object
+    		pipeline.add(new BasicDBObject("$project", new BasicDBObject("_id", "$_id." + FST_S22_VARIANTID).append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
     	} else if (useTempColl) {
 	    	// Stage 5 : Group runs (we used $lookup then $unwind)
 	    	BasicDBObject groupRuns = new BasicDBObject();
@@ -748,10 +741,10 @@ public class VisualizationService {
 	    	groupRuns.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
 	    	pipeline.add(new BasicDBObject("$group", groupRuns));
 		}
-    	
-		if (info[1].length() > 1) {	// multiple projects involved: merge genotypes into a single document per variant
+
+    	if (fWillNeedToMergeObjects) {	// merge genotypes into a single document per variant
 			BasicDBObject projectMergeGroup = new BasicDBObject();
-			projectMergeGroup.put("_id", new BasicDBObject(FST_S22_VARIANTID, "$_id." + FST_S22_VARIANTID));
+			projectMergeGroup.put("_id", "$_id." + FST_S22_VARIANTID);
 			projectMergeGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
 			pipeline.add(new BasicDBObject("$group", projectMergeGroup));
 		}
@@ -767,13 +760,13 @@ public class VisualizationService {
     private static final String FST_S22_VARIANTID = "vi";
     private static final String FST_S22_POPULATIONID = "pi";
     private static final String FST_S22_ALLELECOUNT = "ac";
-    private static final String FST_S22_HETEROZYGOTECOUNT = "hc";
+    private static final String FST_S22_HETEROZYGOUSCOUNT = "hc";
 
     private static final String FST_RES_SAMPLESIZE = "ss";
     private static final String FST_RES_ALLELEID = "al";
     private static final String FST_RES_ALLELEMAX = "am";
     private static final String FST_RES_ALLELEFREQUENCY = "af";
-    private static final String FST_RES_HETEROZYGOTEFREQUENCY = "hf";
+    private static final String FST_RES_HETEROZYGOUSFREQUENCY = "hf";
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
@@ -796,7 +789,7 @@ public class VisualizationService {
 	        	individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
 
         boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals, workWithSamples);
 
     	// Stage 14 : Get populations genotypes
     	BasicDBList populationGenotypes = new BasicDBList();
@@ -856,7 +849,7 @@ public class VisualizationService {
     	groupAllele.put("_id", groupAlleleId);
     	groupAllele.put(FST_RES_SAMPLESIZE, new BasicDBObject("$first", "$" + FST_RES_SAMPLESIZE));
     	groupAllele.put(FST_S22_ALLELECOUNT, new BasicDBObject("$sum", 1));
-    	groupAllele.put(FST_S22_HETEROZYGOTECOUNT, new BasicDBObject("$sum", new BasicDBObject("$toInt", "$" + FST_S20_HETEROZYGOTE)));
+    	groupAllele.put(FST_S22_HETEROZYGOUSCOUNT, new BasicDBObject("$sum", new BasicDBObject("$toInt", "$" + FST_S20_HETEROZYGOTE)));
     	pipeline.add(new BasicDBObject("$group", groupAllele));
 
     	// Stage 23 : Group by population
@@ -871,9 +864,9 @@ public class VisualizationService {
     	BasicDBObject groupPopulationAllele = new BasicDBObject();
     	groupPopulationAllele.put(FST_RES_ALLELEID, "$_id." + FST_RES_ALLELEID);
     	BasicDBObject alleleFrequencyOperation = new BasicDBObject("$divide", Arrays.asList("$" + FST_S22_ALLELECOUNT, new BasicDBObject("$multiply", Arrays.asList("$" + FST_RES_SAMPLESIZE, 2))));
-    	BasicDBObject hetFrequencyOperation = new BasicDBObject("$divide", Arrays.asList("$" + FST_S22_HETEROZYGOTECOUNT, "$" + FST_RES_SAMPLESIZE));
+    	BasicDBObject hetFrequencyOperation = new BasicDBObject("$divide", Arrays.asList("$" + FST_S22_HETEROZYGOUSCOUNT, "$" + FST_RES_SAMPLESIZE));
     	groupPopulationAllele.put(FST_RES_ALLELEFREQUENCY, alleleFrequencyOperation);
-    	groupPopulationAllele.put(FST_RES_HETEROZYGOTEFREQUENCY, hetFrequencyOperation);
+    	groupPopulationAllele.put(FST_RES_HETEROZYGOUSFREQUENCY, hetFrequencyOperation);
 
     	groupPopulation.put(FST_RES_ALLELES, new BasicDBObject("$push", groupPopulationAllele));
     	pipeline.add(new BasicDBObject("$group", groupPopulation));
@@ -942,7 +935,7 @@ public class VisualizationService {
         double e2 = c2 / (a1*a1 + a2);
 
         boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals, workWithSamples);
     	String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
 
     	// Stage 14 : Get the genotypes needed
@@ -1068,7 +1061,7 @@ public class VisualizationService {
         intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
 
         boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals);
+    	List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals, workWithSamples);
 
         List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
         Integer[] ploidyLevels = genotypingProjects.stream().map(pj -> pj.getPloidyLevel()).distinct().toArray(Integer[]::new);
