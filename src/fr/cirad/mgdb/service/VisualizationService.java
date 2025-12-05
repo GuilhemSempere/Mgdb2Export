@@ -702,7 +702,6 @@ public class VisualizationService {
     	        .append("branches", branches)
     	        .append("default", null);
     	    pipeline.add(new BasicDBObject("$addFields",new BasicDBObject(GENOTYPE_DATA_S8_BIO_ENTITY , new BasicDBObject("$switch", switchExpr))));
-
     	    
     		// Stage 10 : Ensure that only documents where this field is actually a valid string value (not null, not missing) proceed to the grouping stages
     		pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S8_BIO_ENTITY , new BasicDBObject("$ne", null))));
@@ -732,7 +731,7 @@ public class VisualizationService {
     			variantGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
     		pipeline.add(new BasicDBObject("$group", variantGroup));
 
-//    		// Stage 14 : Convert back to sp object
+    		// Stage 14 : Convert back to sp object
     		pipeline.add(new BasicDBObject("$project", new BasicDBObject("_id", "$_id." + FST_S22_VARIANTID).append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
     	} else if (useTempColl) {
 	    	// Stage 5 : Group runs (we used $lookup then $unwind)
@@ -1296,13 +1295,9 @@ public class VisualizationService {
 			}
 		}
 		else {
-//            if (workWithSamples)
-//            	for (GenotypingSample sp : samples)	// hack them so each sample is considered separately
-//            		sp.setDetached(true);
-//			final Map<Integer, String> callSetIdToIndividualMap = samples.stream().collect(Collectors.toMap(GenotypingSample::getId, GenotypingSample::getIndividual));
-	        final Map<Integer, String> callSetIdToIndividualMap = new HashMap<>();
+	        final Map<Integer, String> callSetIdToBioEntityMap = new HashMap<>();
 	        for (Callset cs : callSetsToExport)
-	        	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
+	        	callSetIdToBioEntityMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
 	        
 		    Map<String, Collection<String>> bioEntitiesByPop = new HashMap<>();
 		    Map<String, HashMap<String, Float>> annotationFieldThresholdsByPop = new HashMap<>();
@@ -1321,10 +1316,10 @@ public class VisualizationService {
 
 	    	ByteArrayOutputStream baos = new ByteArrayOutputStream();
 			HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
-			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), bioEntitiesByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, callSetsToExport);
+			heh.writeGenotypeFile(true, true, true, true, baos, info[0], mongoTemplate.findOne(new Query(Criteria.where("_id").is(Assembly.getThreadBoundAssembly())), Assembly.class), bioEntitiesByPop, workWithSamples, callSetIdToBioEntityMap, annotationFieldThresholdsByPop, progress, fWorkingOnTempColl ? tempVarColl.getNamespace().getCollectionName() : null, variantQueryForTargetCollection, countCursor.hasNext() ? ((Number) countCursor.next().get("count")).longValue() : 0, null, callSetsToExport);
 			sb.append(baos.toString());
 			progress.markAsComplete();
-			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(callSetIdToIndividualMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
+			LOG.debug("igvData processed range " + mdr.getDisplayedSequence() + ":" + mdr.getDisplayedRangeMin() + "-" + mdr.getDisplayedRangeMax() + " for " + new HashSet<>(callSetIdToBioEntityMap.values()).size() + " individuals in " + (System.currentTimeMillis() - before) / 1000f + "s");
 		}
 		
 		return sb.toString();
