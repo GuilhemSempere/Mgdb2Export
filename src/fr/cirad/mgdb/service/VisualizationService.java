@@ -1105,7 +1105,220 @@ public class VisualizationService {
 
     	return pipeline;
     }
+    
+    private static final String HET_S14_POPULATIONGENOTYPES = "pg";
+    private static final String HET_S15_POPULATION = "pp";
+    private static final String HET_S16_SAMPLESIZE = "ss";
+    private static final String HET_S17_GENOTYPE = "gt";
+    private static final String HET_S18_ISHETEROZYGOTE = "ht";
 
+    private static final String HET_RES_HETEROZYGOSITY = "he";
+    private static final String HET_RES_POPULATIONS = "ps";
+
+    /**
+     * Builds aggregation pipeline to calculate heterozygosity rate across populations
+     * Heterozygosity is the proportion of heterozygous genotypes per variant
+     * 
+     * @param gdr the density request containing query parameters
+     * @param useTempColl whether to use a temporary collection
+     * @param workWithSamples whether to work with samples or individuals
+     * @return pipeline stages for heterozygosity calculation
+     * @throws Exception if an error occurs
+     */
+    private List<BasicDBObject> buildHeterozygosityQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
+
+        List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
+        List<List<String>> ga4ghCallsetIds = gdr.getAllCallSetIds();
+        for (int i = 0; i < ga4ghCallsetIds.size(); i++)
+            selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? 
+                (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : 
+                ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+
+        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
+        for (Collection<String> group : selectedMaterial)
+            if (!workWithSamples)
+                individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, group));
+            else 
+                individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
+
+        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
+        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals, workWithSamples);
+
+        // Stage: Get populations genotypes
+        BasicDBList populationGenotypes = new BasicDBList();
+        for (Collection<String> group : selectedMaterial) {
+            populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
+        }
+
+        BasicDBObject projectGenotypes = new BasicDBObject();
+        projectGenotypes.put("_id", 1);
+        projectGenotypes.put(HET_S14_POPULATIONGENOTYPES, populationGenotypes);
+        pipeline.add(new BasicDBObject("$project", projectGenotypes));
+
+        // Stage: Split by population
+        BasicDBObject unwindPopulations = new BasicDBObject();
+        unwindPopulations.put("path", "$" + HET_S14_POPULATIONGENOTYPES);
+        unwindPopulations.put("includeArrayIndex", HET_S15_POPULATION);
+        pipeline.add(new BasicDBObject("$unwind", unwindPopulations));
+
+        // Stage: Compute sample size (non-null genotypes)
+        BasicDBObject sampleSizeMapping = new BasicDBObject();
+        sampleSizeMapping.put("input", "$" + HET_S14_POPULATIONGENOTYPES);
+        sampleSizeMapping.put("in", new BasicDBObject("$cmp", Arrays.asList("$$this", null)));
+        BasicDBObject addSampleSize = new BasicDBObject(HET_S16_SAMPLESIZE, new BasicDBObject("$sum", new BasicDBObject("$map", sampleSizeMapping)));
+        pipeline.add(new BasicDBObject("$addFields", addSampleSize));
+
+        // Stage: Unwind by genotype
+        pipeline.add(new BasicDBObject("$unwind", "$" + HET_S14_POPULATIONGENOTYPES));
+
+        // Stage: Eliminate missing genotypes
+        BasicDBObject matchMissing = new BasicDBObject(HET_S14_POPULATIONGENOTYPES, new BasicDBObject("$ne", null));
+        pipeline.add(new BasicDBObject("$match", matchMissing));
+
+        // Stage: Check if heterozygote (for diploid: "0/1", for haploid: impossible so will be false)
+        BasicDBObject addHeterozygote = new BasicDBObject();
+        addHeterozygote.put(HET_S15_POPULATION, 1);
+        addHeterozygote.put(HET_S16_SAMPLESIZE, 1);
+        addHeterozygote.put(HET_S17_GENOTYPE, "$" + HET_S14_POPULATIONGENOTYPES);
+        
+        // Detect heterozygote: split genotype and check if alleles differ
+        BasicDBObject splitGenotype = new BasicDBObject("$split", Arrays.asList("$" + HET_S14_POPULATIONGENOTYPES, "/"));
+        BasicDBList genotypeElements = new BasicDBList();
+        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList(splitGenotype, 0)));
+        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList(splitGenotype, 1)));
+        addHeterozygote.put(HET_S18_ISHETEROZYGOTE, new BasicDBObject("$ne", genotypeElements));
+        
+        pipeline.add(new BasicDBObject("$project", addHeterozygote));
+
+        // Stage: Group by variant and population
+        BasicDBObject groupVariantPopulation = new BasicDBObject();
+        BasicDBObject groupVariantPopulationId = new BasicDBObject();
+        groupVariantPopulationId.put("vi", "$_id");
+        groupVariantPopulationId.put("pi", "$" + HET_S15_POPULATION);
+        groupVariantPopulation.put("_id", groupVariantPopulationId);
+        groupVariantPopulation.put(HET_S16_SAMPLESIZE, new BasicDBObject("$first", "$" + HET_S16_SAMPLESIZE));
+        groupVariantPopulation.put(HET_RES_HETEROZYGOSITY, new BasicDBObject("$avg", new BasicDBObject("$toInt", "$" + HET_S18_ISHETEROZYGOTE)));
+        pipeline.add(new BasicDBObject("$group", groupVariantPopulation));
+
+        // Stage: Group by variant, collect populations
+        BasicDBObject groupVariant = new BasicDBObject();
+        groupVariant.put("_id", "$_id.vi");
+        BasicDBObject populationData = new BasicDBObject();
+        populationData.put(HET_S16_SAMPLESIZE, "$" + HET_S16_SAMPLESIZE);
+        populationData.put(HET_RES_HETEROZYGOSITY, "$" + HET_RES_HETEROZYGOSITY);
+        groupVariant.put(HET_RES_POPULATIONS, new BasicDBObject("$push", populationData));
+        pipeline.add(new BasicDBObject("$group", groupVariant));
+
+        return pipeline;
+    }
+    
+    public Map<Long, Float> selectionHeterozygosity(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+        long before = System.currentTimeMillis();
+
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+
+        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "heterozygosity on sequence " + gdr.getDisplayedSequence()});
+        ProgressIndicator.registerProgressIndicator(progress);
+
+        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
+
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
+        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
+        {
+            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+            return null;
+        }
+
+        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
+        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
+        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
+        final boolean useTempColl = (nTempVarCount != 0);
+        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
+        final Map<Long, Float> result = new ConcurrentHashMap<>();
+
+        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
+            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
+                progress.setError("selectionHeterozygosity: Unable to find default position range, make sure current results are in sync with interface filters.");
+                return result;
+            }
+
+        List<BasicDBObject> baseQuery = buildHeterozygosityQuery(gdr, useTempColl, workWithSamples);
+
+        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
+        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+
+        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
+        for (int i=0; i<intervalQueries.size(); i++) {
+            final long chunkIndex = i;
+
+            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
+
+            Thread t = new Thread() {
+                public void run() {
+                    if (progress.isAborted())
+                        return;
+
+                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
+
+                    if (progress.isAborted())
+                        return;
+
+                    long intervalStart = gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize);
+                    
+                    // Collect all heterozygosity values across all variants and populations in this interval
+                    List<Double> allHetValues = new ArrayList<>();
+                    
+                    Iterator<Document> it = queryResult.iterator();
+                    while (it.hasNext()) {
+                        Document variantResult = it.next();
+                        List<Document> populations = variantResult.getList(HET_RES_POPULATIONS, Document.class);
+                        
+                        if (populations != null)
+                            for (Document popData : populations) {
+                                Object hetObj = popData.get(HET_RES_HETEROZYGOSITY);
+                                if (hetObj != null) {
+                                    double het = ((Number) hetObj).doubleValue();
+                                    if (!Double.isNaN(het))
+                                        allHetValues.add(het * 100);
+                                }
+                            }
+                    }
+                    
+                    // Calculate average heterozygosity across all populations for this interval
+                    result.put(intervalStart, allHetValues.isEmpty() ? Float.NaN : (float) allHetValues.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN));
+                    
+                    progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                }
+            };
+
+            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+        }
+
+        if (executor instanceof GroupedExecutor)
+            ((GroupedExecutor) executor).shutdown(progress.getProcessId());
+        else
+            executor.shutdown();
+
+        for (Future<Void> ttwf : threadsToWaitFor)
+            ttwf.get();
+
+        if (progress.isAborted())
+            return null;
+
+        progress.setCurrentStepProgress(100);
+        LOG.info("selectionHeterozygosity treated " + gdr.getDisplayedRangeIntervalCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+
+        progress.markAsComplete();
+
+        return new TreeMap<>(result);
+    }
+    
     private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean fGotMultiCallSetIndividuals) {
     	BasicDBList result = new BasicDBList();
     	Iterator<String> indIt = selectedMaterial.iterator();
