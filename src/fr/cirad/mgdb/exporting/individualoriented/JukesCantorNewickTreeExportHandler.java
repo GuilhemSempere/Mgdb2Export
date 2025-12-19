@@ -45,7 +45,7 @@ public class JukesCantorNewickTreeExportHandler extends JukesCantorDistanceMatri
      */
     @Override
     public String getExportFormatName() {
-        return "NJ-NEWICK";
+        return "JK-NJ-NEWICK";
     }
 
     /* (non-Javadoc)
@@ -57,46 +57,52 @@ public class JukesCantorNewickTreeExportHandler extends JukesCantorDistanceMatri
     }
 
     @Override
-    protected void finalizeExportUsingDistanceMatrix(List<String> sequenceNames, ArrayList<String> exportedIndividuals, String exportName, double[][] distanceMatrix, ZipOutputStream zos, ProgressIndicator progress) throws Exception {
-    	progress.moveToNextStep();
-        int[][] intDistanceMatrix = new int[distanceMatrix.length][];
-        for (int i = 0; i < distanceMatrix.length; i++) {
-        	intDistanceMatrix[i] = new int[distanceMatrix.length - 1 - i];
-            for (int j = i + 1; j < distanceMatrix.length; j++)
-            	intDistanceMatrix[i][j - 1 - i] = (int) (distanceMatrix[i][j] * 100000000);
+    protected void finalizeExportUsingDistanceMatrix(List<String> sequenceNames, String exportName, double[][] distanceMatrix, ZipOutputStream zos, ProgressIndicator progress) throws Exception {
+        progress.moveToNextStep();
+
+        final int n = distanceMatrix.length;
+
+        // Upper-triangle int distance matrix
+        int[][] intDistanceMatrix = new int[n][];
+        for (int i = 0; i < n; i++) {
+            intDistanceMatrix[i] = new int[n - 1 - i];
+            for (int j = i + 1; j < n; j++)
+                intDistanceMatrix[i][j - i - 1] = (int) (distanceMatrix[i][j - i - 1] * 100000000);
         }
 
-		StringBuffer sb = new StringBuffer(); 
+        StringBuffer sb = new StringBuffer();
 
-		TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
-		TreeNode[] nodes = tb.build();
-//    		nodes[nodes.length-1].rootTreeAt("CR1062");
-		nodes[nodes.length-1].buildTreeString(sb);
+        TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
 
-    	
+        TreeNode[] nodes = tb.build();
+
+//          nodes[nodes.length-1].rootTreeAt("CR1062");
+        nodes[nodes.length - 1].buildTreeString(sb);
+
         zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
-		String treeString = sb.toString() + ";";
-    	zos.write(treeString.getBytes());
-		
-//            NewickTreeRerooter rerooter = new NewickTreeRerooter();
-//            TreeNode root = rerooter.parseNewick(treeString);
-//            TreeNode newRoot = rerooter.reroot(root, "CX280");
-//            String newNewick = rerooter.toNewick(newRoot);
-//        	zos.write(newNewick.getBytes());
-        
-//        	zos.write(NewickRooter.rootTree(treeString, /* "IRIS_313-10729" */ "CX280").getBytes());
-//    		StringBuffer rootedTreeSB = new StringBuffer();
-//    		rootTree(treeString, /* "IRIS_313-10729" */ "CX280").buildTreeString(rootedTreeSB);
-//        	zos.write(rootedTreeSB.toString().getBytes());
+        String treeString = sb.toString() + ";";
+        zos.write(treeString.getBytes());
+
+//          NewickTreeRerooter rerooter = new NewickTreeRerooter();
+//          TreeNode root = rerooter.parseNewick(treeString);
+//          TreeNode newRoot = rerooter.reroot(root, "CX280");
+//          String newNewick = rerooter.toNewick(newRoot);
+//          zos.write(newNewick.getBytes());
+
+//          zos.write(NewickRooter.rootTree(treeString, /* \"IRIS_313-10729\" */ \"CX280\").getBytes());
+//          StringBuffer rootedTreeSB = new StringBuffer();
+//          rootTree(treeString, /* \"IRIS_313-10729\" */ \"CX280\").buildTreeString(rootedTreeSB);
+//          zos.write(rootedTreeSB.toString().getBytes());
+
         zos.closeEntry();
-	}
+    }
 
 	/* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getStepList()
      */
     @Override
     public List<String> getStepList() {
-        return new ArrayList<>(super.getStepList()) {{ add("Building Jukes-Cantor Newick tree"); }};
+        return new ArrayList<>(super.getStepList()) {{ add("Building neighbor-joining Newick tree using NINJA algorithm"); }};
     }
 
 	@Override
