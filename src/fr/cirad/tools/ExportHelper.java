@@ -46,14 +46,14 @@ public class ExportHelper {
 	public HashMap<String, String> getToolURLsForExport(String exportFormat, HashMap<String, String> fileUrls) {
 	    HashMap<String, String> resolvedUrls = new HashMap<>();
 	    HashMap<String, HashMap<String, String>> onlineTools = getOnlineOutputToolURLs();
-	    
+
 	    for (Map.Entry<String, HashMap<String, String>> toolEntry : onlineTools.entrySet()) {
 	        String toolLabel = toolEntry.getKey();
 	        HashMap<String, String> toolInfo = toolEntry.getValue();
-	        
+
 	        String urlTemplate = toolInfo.get("url");
 	        String supportedFormats = toolInfo.get("formats");
-	        
+
 	        // Check if this tool supports the export format
 	        if (supportedFormats != null && !supportedFormats.isEmpty()) {
 	            String[] formats = supportedFormats.split(",");
@@ -68,19 +68,19 @@ public class ExportHelper {
 	                continue; // Skip this tool
 	            }
 	        }
-	        
+
 	        // Track which extensions will be used by this tool
 	        List<String> usedExtensions = new ArrayList<>();
-	        
+
 	        // Replace placeholders in URL template
 	        String resolvedUrl = urlTemplate;
 	        Pattern placeholderPattern = Pattern.compile("\\{([^}]+)\\}");
 	        Matcher matcher = placeholderPattern.matcher(urlTemplate);
-	        
+
 	        while (matcher.find()) {
 	            String placeholder = matcher.group(1);
 	            String[] extensions = placeholder.split("\\|");
-	            
+
 	            // Find matching file URL
 	            String replacementUrl = null;
 	            String matchedExt = null;
@@ -92,20 +92,49 @@ public class ExportHelper {
 	                    break;
 	                }
 	            }
-	            
+
 	            if (replacementUrl != null) {
 	                resolvedUrl = resolvedUrl.replace("{" + placeholder + "}", replacementUrl);
 	                usedExtensions.add(matchedExt);
 	            }
 	        }
-	        
-	        // Only add if all placeholders were successfully replaced
-	        if (!resolvedUrl.contains("{")) {
-	            // Enrich label with used extensions
+
+	        // Remove query parameters that still contain unresolved placeholders
+	        if (resolvedUrl.contains("{")) {
+	            // Split URL into base and query string
+	            String[] urlParts = resolvedUrl.split("\\?", 2);
+	            if (urlParts.length == 2) {
+	                String baseUrl = urlParts[0];
+	                String queryString = urlParts[1];
+	                
+	                // Filter out parameters with placeholders
+	                String[] params = queryString.split("&");
+	                List<String> validParams = new ArrayList<>();
+	                
+	                for (String param : params) {
+	                    if (!param.contains("{")) {
+	                        validParams.add(param);
+	                    }
+	                }
+	                
+	                // Reconstruct URL
+	                if (!validParams.isEmpty()) {
+	                    resolvedUrl = baseUrl + "?" + String.join("&", validParams);
+	                } else {
+	                    resolvedUrl = baseUrl;
+	                }
+	            }
+	        }
+
+	        // Always add the URL, even if some placeholders were removed
+	        if (!usedExtensions.isEmpty()) {
 	            String enrichedLabel = "Send " + String.join(", ", usedExtensions) + " file(s) to " + toolLabel;
 	            resolvedUrls.put(enrichedLabel, resolvedUrl);
+	        } else {
+	            // If no files were matched but URL is valid, add with generic label
+	            resolvedUrls.put(toolLabel, resolvedUrl);
 	        }
-	    }	    
+	    }
 	    return resolvedUrls;
 	}
 }
