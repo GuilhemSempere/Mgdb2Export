@@ -43,7 +43,7 @@ import org.springframework.data.mongodb.core.query.Query;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
-import fr.cirad.mgdb.exporting.tools.nj.JukesCantorDistanceMatrixCalculator;
+import fr.cirad.mgdb.exporting.tools.dist.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -179,7 +179,7 @@ public class JukesCantorDistanceMatrixExportHandler extends FastaPseudoAlignment
 	        }
 
 	        // Compute distance matrix (upper-triangle safe)
-	        double[][] distanceMatrix = JukesCantorDistanceMatrixCalculator.calculateDistanceMatrix(sequences, progress);
+	        double[][] distanceMatrix = new JukesCantorDistanceMatrixCalculator(sequences).calculate(progress);
 
 	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
 	        finalizeExportUsingDistanceMatrix(sequenceNames, exportName, distanceMatrix, zos, progress);

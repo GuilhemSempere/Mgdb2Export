@@ -4,6 +4,7 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileReader;
+import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.text.DecimalFormatSymbols;
@@ -15,12 +16,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeSet;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.LongAdder;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
@@ -37,6 +32,7 @@ import com.mongodb.BasicDBList;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
+import fr.cirad.mgdb.exporting.tools.dist.AlleleSharingDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.tools.AlphaNumericComparator;
@@ -223,7 +219,8 @@ public class AlleleSharingDistanceMatrixExportHandler extends EigenstratExportHa
             progress.moveToNextStep();
 
             // Compute ASD distance matrix
-            double[][] distanceMatrix = calculateDistanceMatrix(genotypeBytes, filteredIndividuals.size(), numMarkers, progress);
+            double[][] distanceMatrix = new AlleleSharingDistanceMatrixCalculator(genotypeBytes/*, filteredIndividuals.size()*/, numMarkers).calculate(progress);
+            
 
             if (distanceMatrix == null || progress.isAborted() || progress.getError() != null) {
                 return;
@@ -292,166 +289,193 @@ public class AlleleSharingDistanceMatrixExportHandler extends EigenstratExportHa
     }
     
     /**
-     * Read filtered genotype data into byte arrays.
+     * Reads genotype data from a file into byte arrays, producing a matrix of shape [nIndividuals][nMarkers].
+     * Supports filtering individuals by name.
+     *
+     * File format:
+     * - Each row = a SNP / marker
+     * - Each column = an individual
+     * - Characters = '0', '1', '2', '9' (missing)
+     *
+     * @param genoFile          input file
+     * @param allIndividuals    list of all individual names in file order
+     * @param filteredIndividuals subset to keep (may be same as allIndividuals)
+     * @param numMarkers        number of markers / rows in the file
+     * @param progress          progress indicator
+     * @return [nFilteredIndividuals][numMarkers] numeric byte matrix
      */
-    private byte[][] readFilteredGenotypeData(File genoFile, List<String> allIndividuals, 
-            List<String> filteredIndividuals, int numMarkers, ProgressIndicator progress) throws Exception {
-        
-        // Create a map from individual name to its position
+    public static byte[][] readFilteredGenotypeData(
+            File genoFile,
+            List<String> allIndividuals,
+            List<String> filteredIndividuals,
+            int numMarkers,
+            ProgressIndicator progress) throws IOException {
+
+        int nAll = allIndividuals.size();
+        int nFiltered = filteredIndividuals.size();
+
+        // Map individual name → column index
         Map<String, Integer> individualIndexMap = new HashMap<>();
-        for (int i = 0; i < allIndividuals.size(); i++) {
+        for (int i = 0; i < nAll; i++) {
             individualIndexMap.put(allIndividuals.get(i), i);
         }
-        
-        // Create filtered index list
-        int[] filteredIndices = new int[filteredIndividuals.size()];
-        for (int i = 0; i < filteredIndividuals.size(); i++) {
+
+        // Prepare filtered indices (columns)
+        int[] filteredIndices = new int[nFiltered];
+        for (int i = 0; i < nFiltered; i++) {
             filteredIndices[i] = individualIndexMap.get(filteredIndividuals.get(i));
         }
-        
-        // Initialize byte array for filtered individuals
-        byte[][] genotypeBytes = new byte[filteredIndividuals.size()][numMarkers];
-        
+
+        // Allocate output: [nFilteredIndividuals][numMarkers]
+        byte[][] genotypeBytes = new byte[nFiltered][numMarkers];
+
         try (BufferedReader reader = new BufferedReader(new FileReader(genoFile))) {
             String line;
-            int currentLine = 0;
-            int filteredIdx = 0;
-            
-            // Read through the file once
-            while ((line = reader.readLine()) != null && currentLine < allIndividuals.size()) {
-                // Check if this individual is in our filtered list
-                if (filteredIdx < filteredIndices.length && currentLine == filteredIndices[filteredIdx]) {
-                    String genotypeLine = line.trim();
-                    
-                    // Convert to bytes
-                    for (int m = 0; m < Math.min(numMarkers, genotypeLine.length()); m++) {
-                        genotypeBytes[filteredIdx][m] = (byte) genotypeLine.charAt(m);
-                    }
-                    
-                    filteredIdx++;
-                    
-                    // Update progress
-                    if (filteredIdx % 100 == 0 && progress != null) {
-                        int pct = 50 + (int) ((filteredIdx / (double) filteredIndividuals.size()) * 25);
-                        progress.setCurrentStepProgress(pct);
-                        
-                        if (progress.getError() != null || progress.isAborted()) {
-                            LOG.debug("ASD export aborted during data reading");
-                            return null;
-                        }
+            int markerIndex = 0;
+
+            while ((line = reader.readLine()) != null && markerIndex < numMarkers) {
+                line = line.trim();
+                if (line.length() < nAll) {
+                    throw new IllegalStateException("Line " + markerIndex + " too short: expected " + nAll + " chars");
+                }
+
+                // Copy only filtered individuals
+                for (int fi = 0; fi < nFiltered; fi++) {
+                    int col = filteredIndices[fi];
+                    char c = line.charAt(col);
+                    if (c >= '0' && c <= '2') {
+                        genotypeBytes[fi][markerIndex] = (byte) (c - '0');
+                    } else {
+                        genotypeBytes[fi][markerIndex] = 9; // missing
                     }
                 }
-                currentLine++;
+
+                markerIndex++;
+
+                // Progress update
+                if (progress != null && markerIndex % 100 == 0) {
+                    int pct = 50 + (int) ((markerIndex / (double) numMarkers) * 25);
+                    progress.setCurrentStepProgress(pct);
+
+                    if (progress.isAborted() || progress.getError() != null) {
+                        System.out.println("ASD export aborted during data reading");
+                        return null;
+                    }
+                }
+            }
+
+            if (markerIndex != numMarkers) {
+                throw new IllegalStateException("Expected " + numMarkers + " markers, but got " + markerIndex);
             }
         }
-        
+
         return genotypeBytes;
     }
+
     
-    /**
-     * Calculate ASD distance matrix using parallel processing.
-     */
-    private double[][] calculateDistanceMatrix(byte[][] genotypeBytes, int nIndividuals, int nMarkers, ProgressIndicator progress) throws InterruptedException {
-        
-        // Upper-triangle allocation (saves 50% memory)
-        final double[][] dist = new double[nIndividuals][];
-        for (int i = 0; i < nIndividuals; i++)
-            dist[i] = new double[nIndividuals - i - 1];
-
-        final long totalPairs = (long) nIndividuals * (nIndividuals - 1) / 2;
-        final LongAdder completed = new LongAdder();
-
-        final int cpu = Runtime.getRuntime().availableProcessors();
-        final int threads = Math.max(1, cpu / 2);
-        
-        LOG.debug("Launching ASD calculation on " + threads + " threads for " + 
-            nIndividuals + " individuals with " + nMarkers + " markers (" + totalPairs + " pairs)");
-
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
-        List<Future<Void>> futures = new ArrayList<>();
-
-        // Process in blocks of individuals
-        final int BLOCK_SIZE = 32;
-        List<int[]> blocks = new ArrayList<>();
-        for (int start = 0; start < nIndividuals; start += BLOCK_SIZE) {
-            int from = start;
-            int to = Math.min(nIndividuals, start + BLOCK_SIZE);
-            blocks.add(new int[]{from, to});
-        }
-
-        for (int[] block : blocks) {
-            final int from = block[0];
-            final int to = block[1];
-
-            futures.add(pool.submit(() -> {
-                long localCompleted = 0;
-                final long PROGRESS_STEP = 50_000;
-
-                for (int i = from; i < to; i++) {
-                    // Check for cancellation only once per row
-                    if (progress != null && (progress.getError() != null || progress.isAborted()))
-                        return null;
-                    
-                    final byte[] genoI = genotypeBytes[i];
-
-                    for (int j = i + 1; j < nIndividuals; j++) {
-                        double asd = calculateASD(genoI, genotypeBytes[j], nMarkers);
-                        dist[i][j - i - 1] = asd;
-                        localCompleted++;
-                    }
-                    
-                    // Update shared counter after completing each row to reduce contention
-                    completed.add(localCompleted);
-                    long done = completed.sum();
-                    
-                    // Throttle progress updates
-                    if (done % PROGRESS_STEP < (nIndividuals - i - 1) && progress != null) {
-                        int pct = 75 + (int) ((done / (double) totalPairs) * 25); // Last 25% of progress
-                        progress.setCurrentStepProgress(pct);
-                    }
-                    
-                    localCompleted = 0;
-                }
-                
-                // Add any remaining local count
-                if (localCompleted > 0) {
-                    completed.add(localCompleted);
-                }
-                
-                return null;
-            }));
-        }
-
-        pool.shutdown();
-        
-        // Wait with regular cancellation checks
-        while (!pool.awaitTermination(1, TimeUnit.SECONDS)) {
-            if (progress != null && (progress.getError() != null || progress.isAborted())) {
-                pool.shutdownNow();
-                return null;
-            }
-        }
-
-        if (progress != null && (progress.getError() != null || progress.isAborted()))
-            return null;
-
-        // Wait for all futures to complete
-        for (Future<Void> f : futures) {
-            try {
-                f.get();
-            } catch (ExecutionException e) {
-                if (progress != null)
-                    progress.setError("ASD computation failed: " + e.getCause().getMessage());
-                throw new RuntimeException("ASD computation failed", e.getCause());
-            }
-        }
-
-        if (progress != null)
-            progress.setCurrentStepProgress(100);
-        
-        LOG.debug("ASD matrix calculation completed");
-        return dist;
-    }
+//    /**
+//     * Calculate ASD distance matrix using parallel processing.
+//     */
+//    private double[][] calculateDistanceMatrix(byte[][] genotypeBytes, int nIndividuals, int nMarkers, ProgressIndicator progress) throws InterruptedException {
+//        
+//        // Upper-triangle allocation (saves 50% memory)
+//        final double[][] dist = new double[nIndividuals][];
+//        for (int i = 0; i < nIndividuals; i++)
+//            dist[i] = new double[nIndividuals - i - 1];
+//
+//        final long totalPairs = (long) nIndividuals * (nIndividuals - 1) / 2;
+//        final LongAdder completed = new LongAdder();
+//
+//        final int cpu = Runtime.getRuntime().availableProcessors();
+//        final int threads = Math.max(1, cpu / 2);
+//        
+//        LOG.debug("Launching ASD calculation on " + threads + " threads for " + nIndividuals + " individuals with " + nMarkers + " markers (" + totalPairs + " pairs)");
+//
+//        ExecutorService pool = Executors.newFixedThreadPool(threads);
+//        List<Future<Void>> futures = new ArrayList<>();
+//
+//        // Process in blocks of individuals
+//        final int BLOCK_SIZE = 32;
+//        List<int[]> blocks = new ArrayList<>();
+//        for (int start = 0; start < nIndividuals; start += BLOCK_SIZE) {
+//            int from = start;
+//            int to = Math.min(nIndividuals, start + BLOCK_SIZE);
+//            blocks.add(new int[]{from, to});
+//        }
+//
+//        for (int[] block : blocks) {
+//            final int from = block[0];
+//            final int to = block[1];
+//
+//            futures.add(pool.submit(() -> {
+//                long localCompleted = 0;
+//                final long PROGRESS_STEP = 50_000;
+//
+//                for (int i = from; i < to; i++) {
+//                    // Check for cancellation only once per row
+//                    if (progress != null && (progress.getError() != null || progress.isAborted()))
+//                        return null;
+//                    
+//                    final byte[] genoI = genotypeBytes[i];
+//
+//                    for (int j = i + 1; j < nIndividuals; j++) {
+//                        double asd = calculateASD(genoI, genotypeBytes[j], nMarkers);
+//                        dist[i][j - i - 1] = asd;
+//                        localCompleted++;
+//                    }
+//                    
+//                    // Update shared counter after completing each row to reduce contention
+//                    completed.add(localCompleted);
+//                    long done = completed.sum();
+//                    
+//                    // Throttle progress updates
+//                    if (done % PROGRESS_STEP < (nIndividuals - i - 1) && progress != null) {
+//                        int pct = 75 + (int) ((done / (double) totalPairs) * 25); // Last 25% of progress
+//                        progress.setCurrentStepProgress(pct);
+//                    }
+//                    
+//                    localCompleted = 0;
+//                }
+//                
+//                // Add any remaining local count
+//                if (localCompleted > 0) {
+//                    completed.add(localCompleted);
+//                }
+//                
+//                return null;
+//            }));
+//        }
+//
+//        pool.shutdown();
+//        
+//        // Wait with regular cancellation checks
+//        while (!pool.awaitTermination(1, TimeUnit.SECONDS)) {
+//            if (progress != null && (progress.getError() != null || progress.isAborted())) {
+//                pool.shutdownNow();
+//                return null;
+//            }
+//        }
+//
+//        if (progress != null && (progress.getError() != null || progress.isAborted()))
+//            return null;
+//
+//        // Wait for all futures to complete
+//        for (Future<Void> f : futures) {
+//            try {
+//                f.get();
+//            } catch (ExecutionException e) {
+//                if (progress != null)
+//                    progress.setError("ASD computation failed: " + e.getCause().getMessage());
+//                throw new RuntimeException("ASD computation failed", e.getCause());
+//            }
+//        }
+//
+//        if (progress != null)
+//            progress.setCurrentStepProgress(100);
+//        
+//        LOG.debug("ASD matrix calculation completed");
+//        return dist;
+//    }
     
 	protected void finalizeExportUsingDistanceMatrix(List<String> sequenceNames, String exportName, double[][] distanceMatrix, ZipOutputStream zos, ProgressIndicator progress) throws Exception {
 	    zos.putNextEntry(new ZipEntry(exportName + "." + getExportDataFileExtensions()[0]));
@@ -473,6 +497,7 @@ public class AlleleSharingDistanceMatrixExportHandler extends EigenstratExportHa
 	            	distance = distanceMatrix[i][j - i - 1];	// Upper triangle: retrieve from distanceMatrix[i][j-i-1]
 	            else
 	                distance = distanceMatrix[j][i - j - 1];	// Lower triangle: symmetric to upper triangle
+  
 	            rowBuilder.append(" ").append(formatter.format(distance));
 	        }
 	        
@@ -500,7 +525,7 @@ public class AlleleSharingDistanceMatrixExportHandler extends EigenstratExportHa
 
     @Override
     public String[] getExportDataFileExtensions() {
-        return new String[] {"asd"};
+        return new String[] {"mtx"};
     }
 
     @Override
@@ -508,76 +533,76 @@ public class AlleleSharingDistanceMatrixExportHandler extends EigenstratExportHa
         return new int[] {2};
     }
     
-	 // Lookup table for shared alleles between genotypes
-	 // Index calculation: genotype1 * 10 + genotype2
-	 // Values 0-2 represent hom ref, het, hom alt; 9 represents missing
-	 private static final byte[] SHARED_ALLELES_LOOKUP = new byte[100];
-	
-	 static {
-	     // Initialize all to -1 (invalid)
-	     Arrays.fill(SHARED_ALLELES_LOOKUP, (byte) -1);
-	     
-	     // Valid comparisons (symmetric, so we fill both directions)
-	     // 0 vs 0: 2 shared
-	     SHARED_ALLELES_LOOKUP[0 * 10 + 0] = 2;
-	     
-	     // 0 vs 1: 1 shared
-	     SHARED_ALLELES_LOOKUP[0 * 10 + 1] = 1;
-	     SHARED_ALLELES_LOOKUP[1 * 10 + 0] = 1;
-	     
-	     // 0 vs 2: 0 shared
-	     SHARED_ALLELES_LOOKUP[0 * 10 + 2] = 0;
-	     SHARED_ALLELES_LOOKUP[2 * 10 + 0] = 0;
-	     
-	     // 1 vs 1: 2 shared
-	     SHARED_ALLELES_LOOKUP[1 * 10 + 1] = 2;
-	     
-	     // 1 vs 2: 1 shared
-	     SHARED_ALLELES_LOOKUP[1 * 10 + 2] = 1;
-	     SHARED_ALLELES_LOOKUP[2 * 10 + 1] = 1;
-	     
-	     // 2 vs 2: 2 shared
-	     SHARED_ALLELES_LOOKUP[2 * 10 + 2] = 2;
-	     
-	     // 9 (missing) comparisons are left as -1 to indicate skip
-	 }
-	
-	 /**
-	  * Calculate ASD between two individuals using optimized lookup table.
-	  * 
-	  * This version:
-	  * - Uses numeric comparisons (faster than char comparisons)
-	  * - Employs lookup table for O(1) shared allele determination
-	  * - Corrects the heterozygote logic
-	  * - Eliminates redundant conditionals
-	  */
-	 private double calculateASD(byte[] geno1, byte[] geno2, int nMarkers) {
-	     int totalComparisons = 0;
-	     int sharedAlleles = 0;
-	     
-	     for (int m = 0; m < nMarkers; m++) {
-	         // Convert ASCII to numeric (assuming input is ASCII '0', '1', '2', '9')
-	         int g1 = geno1[m] - '0';  // '0' -> 0, '1' -> 1, '2' -> 2, '9' -> 9
-	         int g2 = geno2[m] - '0';
-	         
-	         // Lookup shared alleles (-1 means skip due to missing data)
-	         int lookupIndex = g1 * 10 + g2;
-	         if (lookupIndex >= 0 && lookupIndex < 100) {
-	             byte shared = SHARED_ALLELES_LOOKUP[lookupIndex];
-	             
-	             if (shared >= 0) {  // Valid comparison (not missing)
-	                 totalComparisons++;
-	                 sharedAlleles += shared;
-	             }
-	         }
-	     }
-	     
-	     if (totalComparisons == 0)
-	         return 1.0; // No comparable data → maximum distance
-	     
-	     // ASD = 1 - (shared_alleles / (2 * total_comparisons))
-	     return 1.0 - (sharedAlleles / (2.0 * totalComparisons));
-	 }
+//	 // Lookup table for shared alleles between genotypes
+//	 // Index calculation: genotype1 * 10 + genotype2
+//	 // Values 0-2 represent hom ref, het, hom alt; 9 represents missing
+//	 private static final byte[] SHARED_ALLELES_LOOKUP = new byte[100];
+//	
+//	 static {
+//	     // Initialize all to -1 (invalid)
+//	     Arrays.fill(SHARED_ALLELES_LOOKUP, (byte) -1);
+//	     
+//	     // Valid comparisons (symmetric, so we fill both directions)
+//	     // 0 vs 0: 2 shared
+//	     SHARED_ALLELES_LOOKUP[0 * 10 + 0] = 2;
+//	     
+//	     // 0 vs 1: 1 shared
+//	     SHARED_ALLELES_LOOKUP[0 * 10 + 1] = 1;
+//	     SHARED_ALLELES_LOOKUP[1 * 10 + 0] = 1;
+//	     
+//	     // 0 vs 2: 0 shared
+//	     SHARED_ALLELES_LOOKUP[0 * 10 + 2] = 0;
+//	     SHARED_ALLELES_LOOKUP[2 * 10 + 0] = 0;
+//	     
+//	     // 1 vs 1: 2 shared
+//	     SHARED_ALLELES_LOOKUP[1 * 10 + 1] = 2;
+//	     
+//	     // 1 vs 2: 1 shared
+//	     SHARED_ALLELES_LOOKUP[1 * 10 + 2] = 1;
+//	     SHARED_ALLELES_LOOKUP[2 * 10 + 1] = 1;
+//	     
+//	     // 2 vs 2: 2 shared
+//	     SHARED_ALLELES_LOOKUP[2 * 10 + 2] = 2;
+//	     
+//	     // 9 (missing) comparisons are left as -1 to indicate skip
+//	 }
+//	
+//	 /**
+//	  * Calculate ASD between two individuals using optimized lookup table.
+//	  * 
+//	  * This version:
+//	  * - Uses numeric comparisons (faster than char comparisons)
+//	  * - Employs lookup table for O(1) shared allele determination
+//	  * - Corrects the heterozygote logic
+//	  * - Eliminates redundant conditionals
+//	  */
+//	 private double calculateASD(byte[] geno1, byte[] geno2, int nMarkers) {
+//	     int totalComparisons = 0;
+//	     int sharedAlleles = 0;
+//	     
+//	     for (int m = 0; m < nMarkers; m++) {
+//	         // Convert ASCII to numeric (assuming input is ASCII '0', '1', '2', '9')
+//	         int g1 = geno1[m] - '0';  // '0' -> 0, '1' -> 1, '2' -> 2, '9' -> 9
+//	         int g2 = geno2[m] - '0';
+//	         
+//	         // Lookup shared alleles (-1 means skip due to missing data)
+//	         int lookupIndex = g1 * 10 + g2;
+//	         if (lookupIndex >= 0 && lookupIndex < 100) {
+//	             byte shared = SHARED_ALLELES_LOOKUP[lookupIndex];
+//	             
+//	             if (shared >= 0) {  // Valid comparison (not missing)
+//	                 totalComparisons++;
+//	                 sharedAlleles += shared;
+//	             }
+//	         }
+//	     }
+//	     
+//	     if (totalComparisons == 0)
+//	         return 1.0; // No comparable data → maximum distance
+//	     
+//	     // ASD = 1 - (shared_alleles / (2 * total_comparisons))
+//	     return 1.0 - (sharedAlleles / (2.0 * totalComparisons));
+//	 }
 	
 //	 /**
 //	  * Alternative version with explicit numeric handling if bytes are already numeric.
