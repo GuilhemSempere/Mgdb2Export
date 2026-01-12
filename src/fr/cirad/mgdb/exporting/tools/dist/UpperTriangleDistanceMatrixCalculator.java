@@ -37,9 +37,7 @@ public abstract class UpperTriangleDistanceMatrixCalculator {
     /**
      * Compute the distance matrix.
      */
-    public final double[][] compute(int n, ProgressIndicator progress)
-            throws InterruptedException {
-
+    public final double[][] compute(int n, ProgressIndicator progress) throws InterruptedException {
         final double[][] dist = allocateMatrix(n);
         final long totalPairs = (long) n * (n - 1) / 2;
         final LongAdder completed = new LongAdder();
@@ -69,8 +67,7 @@ public abstract class UpperTriangleDistanceMatrixCalculator {
 
                     if (progress != null &&
                         done % PROGRESS_STEP < (n - i - 1)) {
-                        progress.setCurrentStepProgress(
-                                (int) ((done / (double) totalPairs) * 100));
+                        progress.setCurrentStepProgress((int) ((done / (double) totalPairs) * 100));
                     }
                 }
                 return null;

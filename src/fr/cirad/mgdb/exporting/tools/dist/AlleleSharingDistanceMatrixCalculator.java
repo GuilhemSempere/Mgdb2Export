@@ -2,6 +2,8 @@ package fr.cirad.mgdb.exporting.tools.dist;
 
 import java.util.Arrays;
 
+import org.apache.log4j.Logger;
+
 import fr.cirad.tools.ProgressIndicator;
 
 /**
@@ -16,9 +18,10 @@ import fr.cirad.tools.ProgressIndicator;
  * - Upper-triangle storage
  * - Threaded execution
  */
-public class AlleleSharingDistanceMatrixCalculator
-        extends UpperTriangleDistanceMatrixCalculator {
+public class AlleleSharingDistanceMatrixCalculator extends UpperTriangleDistanceMatrixCalculator {
 
+	private static final Logger LOG = Logger.getLogger(UpperTriangleDistanceMatrixCalculator.class);
+	
     private final byte[][] genotypes;
     private final int nMarkers;
     private final int nIndividuals;
@@ -51,7 +54,10 @@ public class AlleleSharingDistanceMatrixCalculator
      * Calculate the ASD distance matrix.
      */
     public double[][] calculate(ProgressIndicator progress) throws InterruptedException {
-        return compute(nIndividuals, progress);
+    	long before = System.currentTimeMillis();
+        double[][] result = compute(nIndividuals, progress);
+        LOG.debug("Distance matrix for " + nMarkers + " markers and " + nIndividuals + " individuals computed in " + (System.currentTimeMillis() - before) / 1000d + "s");
+        return result ;
     }
 
     /**
