@@ -287,21 +287,10 @@ public class AlleleSharingDistanceExportHandler extends EigenstratExportHandler 
             // Process genotype data from temp file
             StringBuilder missingDataWarnings = new StringBuilder();
             List<String> filteredIndividuals = new ArrayList<>();
-            byte[][] genotypeBytes =
-                readGenotypeDataAndFilterByMissingness(
-                    tempGenoFile,
-                    sortedIndividuals,
-                    (int) markerCount,
-                    nMaxMissingDataPercentageForIndividuals,
-                    filteredIndividuals,
-                    missingDataWarnings,
-                    progress
-                );
+            byte[][] genotypeBytes = readGenotypeDataAndFilterByMissingness(tempGenoFile, sortedIndividuals, (int) markerCount, nMaxMissingDataPercentageForIndividuals, filteredIndividuals, missingDataWarnings, progress);
 
-            if (genotypeBytes == null || filteredIndividuals.size() < 2) {
+            if (genotypeBytes == null || filteredIndividuals.size() < 2)
                 throw new Exception("Not enough individuals with sufficient data for ASD calculation.");
-            }
-
 
             progress.moveToNextStep();
 

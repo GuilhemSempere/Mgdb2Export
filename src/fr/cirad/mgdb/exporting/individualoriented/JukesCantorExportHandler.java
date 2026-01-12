@@ -78,7 +78,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
      */
     @Override
     public String getExportFormatName() {
-        return "JUKES_CANTOR";
+        return "JUKES-CANTOR";
     }
 
     /* (non-Javadoc)
