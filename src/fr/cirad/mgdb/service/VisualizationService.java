@@ -99,7 +99,7 @@ public class VisualizationService {
         List<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
         
         Long[] minMaxFound = new Long[2];   // will be filled in by the method below
-        boolean retVal = Helper.findDefaultRangeMinMax(info[0], projIDs, tmpCollName, mdr.getDisplayedVariantType(), Arrays.asList(mdr.getDisplayedSequence()), mdr.getStart(), mdr.getEnd(), minMaxFound);
+        boolean retVal = Helper.findDefaultRangeMinMax(info[0], projIDs, tmpCollName, mdr.getDisplayedVariantType() == null ? null : Arrays.asList(mdr.getDisplayedVariantType()), Arrays.asList(mdr.getDisplayedSequence()), mdr.getStart(), mdr.getEnd(), minMaxFound);
         
         mdr.setDisplayedRangeMin(minMaxFound[0]);
         mdr.setDisplayedRangeMax(minMaxFound[1]);
@@ -570,7 +570,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
-                progress.setError("selectionTajimaD: Unable to find default position range, make sure current results are in sync with interface filters.");
+                progress.setError("selectionMaf: Unable to find default position range, make sure current results are in sync with interface filters.");
                 return result;
             }
 
@@ -677,9 +677,9 @@ public class VisualizationService {
             BasicDBObject projectFilter = new BasicDBObject((useTempColl ? GENOTYPE_DATA_S2_DATA + "." : "") + "_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, projId);
             // if not all of this project's runs are involved, only match the required ones
             boolean fNotAllRunsNeeded = projectInvolvedRuns.size() != mongoTemplate.findDistinct(new Query(Criteria.where("_id").is(projId)), GenotypingProject.FIELDNAME_RUNS, GenotypingProject.class, String.class).size();
-            if (fNotAllRunsNeeded)
-                projectFilterList.add(fNotAllRunsNeeded ? new BasicDBObject("$and", Arrays.asList(projectFilter, new BasicDBObject((useTempColl ? GENOTYPE_DATA_S2_DATA + "." : "") + "_id." + VariantRunDataId.FIELDNAME_RUNNAME, new BasicDBObject("$in", projectInvolvedRuns)))) : projectFilter);
+            projectFilterList.add(fNotAllRunsNeeded ? new BasicDBObject("$and", Arrays.asList(projectFilter, new BasicDBObject((useTempColl ? GENOTYPE_DATA_S2_DATA + "." : "") + "_id." + VariantRunDataId.FIELDNAME_RUNNAME, new BasicDBObject("$in", projectInvolvedRuns)))) : projectFilter);
         }
+
         if (!projectFilterList.isEmpty())
         	pipeline.add(new BasicDBObject("$match", projectFilterList.size() == 1 ? projectFilterList.get(0) : new BasicDBObject("$or", projectFilterList)));
 
