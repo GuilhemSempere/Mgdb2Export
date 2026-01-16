@@ -29,8 +29,11 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -52,6 +55,7 @@ import com.mongodb.MongoCommandException;
 import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
+import com.mongodb.client.model.Projections;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.AbstractMarkerOrientedExportHandler;
@@ -128,34 +132,33 @@ public class VisualizationService {
             return null;
         }
 
-        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class) ;
         final ConcurrentHashMap<Long, Long> result = new ConcurrentHashMap<Long, Long>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, nTempVarCount == 0 ? null : tmpVarColl.getNamespace().getCollectionName())) {
-                progress.setError("selectionDensity: Unable to find default position range, make sure current results are in sync with interface filters.");
+                progress.setError("selectionDensity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
                 return result;
             }
 
         final AtomicInteger nTotalTreatedVariantCount = new AtomicInteger(0);
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
 
-        final long rangeMin = gdr.getDisplayedRangeMin();
         final ProgressIndicator finalProgress = progress;
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final int chunkIndex = i;
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), 0L);
+        		continue;
+        	}
 
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted()) {
-                        long partialCount = mongoTemplate.getCollection(nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName()).countDocuments(intervalQueries.get(chunkIndex));
+                        long partialCount = mongoTemplate.getCollection(nTempVarCount == 0 ? mongoTemplate.getCollectionName(VariantData.class) : tmpVarColl.getNamespace().getCollectionName()).countDocuments(intervalEntry.getValue());
                         nTotalTreatedVariantCount.addAndGet((int) partialCount);
-                        result.put((long) (rangeMin + (chunkIndex*intervalSize)), partialCount);
+                        result.put(intervalEntry.getKey(), partialCount);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                     }
                     else {
@@ -163,6 +166,7 @@ public class VisualizationService {
                             f.cancel(true);
                         LOG.debug("Cancelled query threads for process " + finalProgress.getProcessId());
                     }
+                    intervalEntry.setValue(null); // help GC
                 }
             };
 
@@ -223,27 +227,91 @@ public class VisualizationService {
             }
         }
     }
-    
-    public List<BasicDBObject> getIntervalQueries(int nIntervalCount, Collection<String> sequences, String variantType, long rangeMin, long rangeMax, BasicDBList variantQueryDBListToMerge) {
-        String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((rangeMax - rangeMin) / (nIntervalCount - 1))));
 
-        List<BasicDBObject> result = new ArrayList<>();
-        for (int i=0; i<nIntervalCount; i++) {
-            BasicDBObject initialMatchStage = new BasicDBObject();
-            if (sequences != null && !sequences.isEmpty())
-                initialMatchStage.put(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", sequences));
-            if (variantType != null)
-                initialMatchStage.put(VariantData.FIELDNAME_TYPE, variantType);
-            BasicDBObject positionSettings = new BasicDBObject();
-            positionSettings.put("$gte", rangeMin + (i*intervalSize));
-            positionSettings.put(i < nIntervalCount - 1 ? "$lt" : "$lte", i < nIntervalCount - 1 ? rangeMin + ((i+1)*intervalSize) : rangeMax);
-            String startSitePath = refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE;
-            initialMatchStage.put(startSitePath, positionSettings);
-            if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
-                mergeVariantQueryDBList(initialMatchStage, variantQueryDBListToMerge);
-            result.add(initialMatchStage);
+    final int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
+
+    public HashMap<Long, BasicDBObject> getIntervalQueries(
+            int nIntervalCount,
+            Collection<String> sequences,
+            String variantType,
+            long rangeMin,
+            long rangeMax,
+            BasicDBList variantQueryDBListToMerge,
+            MongoCollection<Document> precheckCollection // can be null if we don't want to precheck
+    ) throws InterruptedException, ExecutionException {
+
+        HashMap<Long, BasicDBObject> result = new HashMap<>();
+        if (rangeMax < rangeMin) return result;
+
+        String refPosPathWithDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+
+        long rangeSize = rangeMax - rangeMin;
+        int actualIntervalCount = nIntervalCount;
+
+        // Adjust interval count if requested interval would be too small
+        double requestedIntervalSize = (double) rangeSize / Math.max(1, nIntervalCount);
+        if (requestedIntervalSize < MIN_INTERVAL_SIZE && nIntervalCount > 1) {
+            actualIntervalCount = (int) Math.max(1, Math.floor(rangeSize / MIN_INTERVAL_SIZE));
+            LOG.debug(String.format("Adjusted interval count: %d -> %d (range: %d bp, requested interval size: %.1f bp < minimum %d bp)", nIntervalCount, actualIntervalCount, rangeSize, requestedIntervalSize, MIN_INTERVAL_SIZE));
         }
+        actualIntervalCount = Math.max(1, actualIntervalCount);
+
+        long intervalSize = (long) Math.ceil((double) rangeSize / actualIntervalCount);
+
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+        ExecutorService preCheckExecutor = 
+        		precheckCollection == null || (float) precheckCollection.countDocuments(new BasicDBObject(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$gte", rangeMin).append("$lte", rangeMax))) / actualIntervalCount < 5 ? null
+        			: Executors.newFixedThreadPool(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+        AtomicInteger keptQueryCount = new AtomicInteger(0);
+
+        for (int i = 0; i < actualIntervalCount; i++) {
+            long start = rangeMin + i * intervalSize;
+            long end = (i == actualIntervalCount - 1) ? rangeMax : start + intervalSize;
+
+            BasicDBObject query = new BasicDBObject();
+            if (sequences != null && !sequences.isEmpty())
+                query.put(refPosPathWithDot + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", sequences));
+            if (variantType != null)
+                query.put(VariantData.FIELDNAME_TYPE, variantType);
+
+            BasicDBObject positionSettings = new BasicDBObject("$gte", start);
+            positionSettings.put(i < actualIntervalCount - 1 ? "$lt" : "$lte", end);
+            query.put(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, positionSettings);
+
+            // Async precheck
+            if (preCheckExecutor != null) {
+                CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
+                    boolean hasData = precheckCollection.find(query)
+                            .projection(Projections.include("_id"))
+                            .limit(1)
+                            .iterator()
+                            .hasNext();
+                    synchronized (result) {
+                        if (hasData) {
+                            if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
+                                mergeVariantQueryDBList(query, variantQueryDBListToMerge);
+                            result.put(start, query);
+                            keptQueryCount.incrementAndGet();
+                        } else {
+                            result.put(start, null); // keep interval accounted for
+                        }
+                    }
+                }, preCheckExecutor);
+                futures.add(future);
+            } else {
+                if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
+                    mergeVariantQueryDBList(query, variantQueryDBListToMerge);
+                result.put(start, query);
+            }
+        }
+
+        if (!futures.isEmpty()) {
+            CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).get();
+            preCheckExecutor.shutdown();
+            if (keptQueryCount.get() < actualIntervalCount)
+            	LOG.debug("Precheck led to reduce number of interval queries from " + actualIntervalCount + " to " + keptQueryCount.get());
+        }
+
         return result;
     }
 
@@ -274,13 +342,11 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionFst: Unable to find default position range, make sure current results are in sync with interface filters.");
+                progress.setError("selectionFst: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
                 return result;
             }
 
         final AtomicInteger nTotalTreatedVariantCount = new AtomicInteger(0);
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
-        final long rangeMin = gdr.getDisplayedRangeMin();
         final ProgressIndicator finalProgress = progress;
 
         List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
@@ -288,12 +354,15 @@ public class VisualizationService {
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
         
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final long chunkIndex = i;
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), Double.NaN);
+        		continue;
+        	}
 
             List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
                     if (finalProgress.isAborted())
@@ -415,13 +484,14 @@ public class VisualizationService {
                             }
                         }
     
-                        result.put(rangeMin + (chunkIndex*intervalSize), weightedFstSum / fstWeight);
+                        result.put(intervalEntry.getKey(), weightedFstSum / fstWeight);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                         nTotalTreatedVariantCount.addAndGet(partialCount);
                     }
                     catch (MongoCommandException mce) {
                         progress.setError("Error during Fst calculation: " + mce.getErrorMessage());
                     }
+                    intervalEntry.setValue(null); // help GC
                 }
             };
 
@@ -476,47 +546,44 @@ public class VisualizationService {
         final ConcurrentHashMap<Long, Double> segregatingSites = new ConcurrentHashMap<Long, Double>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
-                progress.setError("selectionTajimaD: Unable to find default position range, make sure current results are in sync with interface filters.");
+            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
+                progress.setError("selectionTajimaD: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
                 return new ArrayList<>();
             }
 
         List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
 
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
 
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final long chunkIndex = i;
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+                segregatingSites.put(intervalEntry.getKey(), 0.0);
+                tajimaD.put(intervalEntry.getKey(), Double.NaN);
+        		continue;
+        	}
 
-            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
+        	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
 
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
 
-                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
-
-                    if (progress.isAborted())
-                        return;
-
-                    Document chunk = queryResult.first();  // There's only one interval per query
-
-                    long intervalStart = gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize);
+                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
                     if (chunk != null) {
                         double value = chunk.getDouble(TJD_RES_TAJIMAD);
                         double sites = (double)chunk.getInteger(TJD_RES_SEGREGATINGSITES);
-                        segregatingSites.put(intervalStart, sites);
-                        tajimaD.put(intervalStart, value);
+                        segregatingSites.put(intervalEntry.getKey(), sites);
+                        tajimaD.put(intervalEntry.getKey(), value);
                     } else {
-                        segregatingSites.put(intervalStart, 0.0);
-                        tajimaD.put(intervalStart, Double.NaN);
+                        segregatingSites.put(intervalEntry.getKey(), 0.0);
+                        tajimaD.put(intervalEntry.getKey(), Double.NaN);
                     }
                     progress.setCurrentStepProgress((short) segregatingSites.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                    intervalEntry.setValue(null); // help GC
                 }
             };
 
@@ -535,7 +602,7 @@ public class VisualizationService {
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.info("selectionTajimaD treated " + gdr.getDisplayedRangeIntervalCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.info("selectionTajimaD treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
 
         progress.markAsComplete();
 
@@ -569,24 +636,26 @@ public class VisualizationService {
         final Map<Long, Float> result = new ConcurrentHashMap<>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
-                progress.setError("selectionMaf: Unable to find default position range, make sure current results are in sync with interface filters.");
+            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
+                progress.setError("selectionMaf: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
                 return result;
             }
 
         List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
         
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
 
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final long chunkIndex = i;
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), Float.NaN);
+        		continue;
+        	}
 
             List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            intervalQueries.get(i).append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
-            windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
+            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             
             Thread t = new Thread() {
                 public void run() {
@@ -598,18 +667,19 @@ public class VisualizationService {
                     Document chunk = queryResult.first();  // There's only one interval per query
                     
                     if (chunk == null)
-                        result.put((gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize)), Float.NaN);
+                        result.put(intervalEntry.getKey(), Float.NaN);
                     else {
                         int nVariantsInInterval = chunk.getInteger("n");
                         if (nVariantsInInterval == 0)
-                            result.put((gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize)), Float.NaN);
+                            result.put(intervalEntry.getKey(), Float.NaN);
                         else {
                             float freq = chunk.getDouble("t").floatValue() / nVariantsInInterval;
-                            result.put((gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize)), Math.min(freq, 100f - freq));
+                            result.put(intervalEntry.getKey(), Math.min(freq, 100f - freq));
                         }
                     }
                     
                     progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                    intervalEntry.setValue(null); // help GC
                 }
             };
 
@@ -628,7 +698,7 @@ public class VisualizationService {
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionMaf treated " + gdr.getDisplayedRangeIntervalCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionMaf treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return result;
@@ -1114,6 +1184,198 @@ public class VisualizationService {
         return pipeline;
     }
     
+    public Map<Long, Float> selectionMissingData(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+        long before = System.currentTimeMillis();
+
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        
+        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "missing data percentage on sequence " + gdr.getDisplayedSequence()});
+        ProgressIndicator.registerProgressIndicator(progress);
+
+        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
+
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
+        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
+        {
+            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+            return null;
+        }
+
+        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
+        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
+        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
+        final boolean useTempColl = (nTempVarCount != 0);
+        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
+        final Map<Long, Float> result = new ConcurrentHashMap<>();
+
+        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
+            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
+                progress.setError("selectionMissingData: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                return result;
+            }
+        
+        List<BasicDBObject> baseQuery = buildMissingDataQuery(gdr, useTempColl, workWithSamples);
+        ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
+        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+
+        // for some reason only this type of query can be worth pre-filtering on lightwaeight collection to find empty intervals early
+        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), Float.NaN);
+        		continue;
+        	}
+
+            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
+
+            Thread t = new Thread() {
+                public void run() {
+                    if (progress.isAborted())
+                        return;
+
+                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
+                    if (chunk == null)
+                    	result.put(intervalEntry.getKey(), Float.NaN);
+                    else {              
+	                    int totalNonMissing = chunk.getInteger("totalNonMissing");
+	                    int totalPossibleCalls = chunk.getInteger("totalPossibleCalls");
+	                    int totalMissingCalls  = totalPossibleCalls - totalNonMissing;
+	                    result.put(intervalEntry.getKey(), totalPossibleCalls == 0 ? 0 : (float) totalMissingCalls / totalPossibleCalls * 100);
+                    }
+                    progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                    intervalEntry.setValue(null); // help GC
+                }
+            };
+
+            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+        }
+
+        if (executor instanceof GroupedExecutor)
+            ((GroupedExecutor) executor).shutdown(progress.getProcessId());
+        else
+            executor.shutdown();
+
+        for (Future<Void> ttwf : threadsToWaitFor)
+            ttwf.get();
+
+        if (progress.isAborted())
+            return null;
+
+        progress.setCurrentStepProgress(100);
+        LOG.info("selectionMissingData treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        progress.markAsComplete();
+
+        return new TreeMap<>(result);
+    }
+
+    /**
+     * Builds aggregation pipeline to calculate missing data percentage
+     * Missing data is defined as when the genotype field is null or empty
+     * 
+     * @param gdr the density request containing query parameters
+     * @param useTempColl whether to use a temporary collection
+     * @param workWithSamples whether to work with samples or individuals
+     * @return pipeline stages for missing data calculation
+     * @throws Exception if an error occurs
+     */
+    private List<BasicDBObject> buildMissingDataQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+        // -------------------- Extract module and project IDs --------------------
+        String[] info = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(Integer::parseInt).toList();
+
+        // -------------------- Determine all individuals/samples to consider --------------------
+        HashSet<String> selectedMaterial = new HashSet<>();
+        List<List<String>> callsetIds = gdr.getAllCallSetIds();
+        for (int i = 0; i < callsetIds.size(); i++) {
+            List<String> currentCallsetIds = callsetIds.get(i);
+            if (currentCallsetIds.isEmpty()) {
+                if (workWithSamples) {
+                    selectedMaterial.addAll(MgdbDao.getProjectSamples(info[0], projIDs));
+                } else {
+                    selectedMaterial.addAll(MgdbDao.getProjectIndividuals(info[0], projIDs));
+                }
+            } else {
+                selectedMaterial.addAll(currentCallsetIds.stream()
+                        .map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR)))
+                        .collect(Collectors.toSet()));
+            }
+        }
+        final int totalIndividuals = selectedMaterial.size(); // known universe
+
+        // -------------------- Build mapping individual/sample -> callset IDs --------------------
+        HashMap<String, List<Callset>> individualOrSampleToCallSetListMap = new HashMap<>();
+        if (!workWithSamples) {
+            individualOrSampleToCallSetListMap.putAll(
+                    MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
+        } else {
+            individualOrSampleToCallSetListMap.putAll(
+                    MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));
+        }
+
+        // -------------------- Build allowed keys for filtering $sp --------------------
+        Set<String> allowedKeySet = new HashSet<>();
+        for (Map.Entry<String, List<Callset>> entry : individualOrSampleToCallSetListMap.entrySet())
+            if (entry.getValue().size() > 1)
+            	allowedKeySet.add(entry.getKey());
+            else
+            	allowedKeySet.add(String.valueOf(entry.getValue().get(0).getId()));
+
+        // -------------------- Start building aggregation pipeline --------------------
+        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true,
+                individualOrSampleToCallSetListMap.values().stream().anyMatch(spList -> spList.size() > 1),
+                workWithSamples);
+
+        // -------------------- $project: count non-missing individuals --------------------
+        BasicDBObject filteredSpArray = new BasicDBObject("$filter",
+                new BasicDBObject("input", new BasicDBObject("$objectToArray", "$sp"))
+                        .append("as", "entry")
+                        .append("cond", new BasicDBObject("$in", Arrays.asList("$$entry.k", allowedKeySet)))
+        );
+
+        // Count entries where gt != null
+        BasicDBObject nonMissingCount = new BasicDBObject("$size",
+                new BasicDBObject("$filter",
+                        new BasicDBObject("input", filteredSpArray)
+                                .append("as", "entry")
+                                .append("cond", new BasicDBObject("$ne", Arrays.asList("$$entry.v.gt", null)))
+                )
+        );
+
+        BasicDBObject projectStage = new BasicDBObject();
+        projectStage.put("_id", 1);
+        projectStage.put("nonMissingCount", nonMissingCount); // per-variant metric
+
+        pipeline.add(new BasicDBObject("$project", projectStage));
+
+        // -------------------- $group: aggregate across variants --------------------
+        BasicDBObject groupStage = new BasicDBObject();
+        groupStage.put("_id", null);
+        groupStage.put("totalNonMissing", new BasicDBObject("$sum", "$nonMissingCount"));
+        groupStage.put("variantCount", new BasicDBObject("$sum", 1));
+        pipeline.add(new BasicDBObject("$group", groupStage));
+
+        // -------------------- Final $project: compute totals and percentages --------------------
+        BasicDBObject finalStage = new BasicDBObject();
+        finalStage.put("totalPossibleCalls", new BasicDBObject("$multiply", Arrays.asList("$variantCount", totalIndividuals)));
+
+        // total missing = totalIndividuals * variantCount − totalNonMissing
+        finalStage.put("totalMissingCalls",
+                new BasicDBObject("$subtract", Arrays.asList(
+                        new BasicDBObject("$multiply", Arrays.asList("$variantCount", totalIndividuals)),
+                        "$totalNonMissing"
+                ))
+        );
+
+        finalStage.put("totalNonMissing", 1);
+        pipeline.add(new BasicDBObject("$project", finalStage));
+
+        return pipeline;
+    }
+
     private static final String HET_S14_POPULATIONGENOTYPES = "pg";
     private static final String HET_S15_POPULATION = "pp";
     private static final String HET_S16_SAMPLESIZE = "ss";
@@ -1247,23 +1509,25 @@ public class VisualizationService {
         final Map<Long, Float> result = new ConcurrentHashMap<>();
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, usedVarCollName)) {
-                progress.setError("selectionHeterozygosity: Unable to find default position range, make sure current results are in sync with interface filters.");
+            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
+                progress.setError("selectionHeterozygosity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are not in sync with interface filters (in which case, try re-applying filtersn).");
                 return result;
             }
 
         List<BasicDBObject> baseQuery = buildHeterozygosityQuery(gdr, useTempColl, workWithSamples);
 
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / (gdr.getDisplayedRangeIntervalCount() - 1))));
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
 
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final long chunkIndex = i;
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), Float.NaN);
+        		continue;
+        	}
 
-            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalQueries.get(i)));
+        	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
 
             Thread t = new Thread() {
                 public void run() {
@@ -1275,8 +1539,6 @@ public class VisualizationService {
                     if (progress.isAborted())
                         return;
 
-                    long intervalStart = gdr.getDisplayedRangeMin() + (chunkIndex*intervalSize);
-                    
                     // Collect all heterozygosity values across all variants and populations in this interval
                     List<Double> allHetValues = new ArrayList<>();
                     
@@ -1297,9 +1559,10 @@ public class VisualizationService {
                     }
                     
                     // Calculate average heterozygosity across all populations for this interval
-                    result.put(intervalStart, allHetValues.isEmpty() ? Float.NaN : (float) allHetValues.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN));
+                    result.put(intervalEntry.getKey(), allHetValues.isEmpty() ? Float.NaN : (float) allHetValues.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN));
                     
                     progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                    intervalEntry.setValue(null); // help GC
                 }
             };
 
@@ -1318,7 +1581,7 @@ public class VisualizationService {
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.info("selectionHeterozygosity treated " + gdr.getDisplayedRangeIntervalCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.info("selectionHeterozygosity treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
 
         progress.markAsComplete();
 
@@ -1367,12 +1630,10 @@ public class VisualizationService {
         final ConcurrentHashMap<Long, Integer> result = new ConcurrentHashMap<Long, Integer>();
 
         if (gvfpr.getDisplayedRangeMin() == null || gvfpr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gvfpr, usedVarCollName))
+            if (!findDefaultRangeMinMax(gvfpr, nTempVarCount > 0 ? usedVarCollName : null))
                 return result;
 
-        final int intervalSize = (int) Math.ceil(Math.max(1, ((gvfpr.getDisplayedRangeMax() - gvfpr.getDisplayedRangeMin()) / (gvfpr.getDisplayedRangeIntervalCount() - 1))));
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
-        final long rangeMin = gvfpr.getDisplayedRangeMin();
         final ProgressIndicator finalProgress = progress;
 
         HashSet<String> selectedMaterial = new HashSet<String>();
@@ -1388,15 +1649,19 @@ public class VisualizationService {
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
-        
-        List<BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null);
-        for (int i=0; i<intervalQueries.size(); i++) {
-            final int chunkIndex = i;
+
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, null);
+        for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
+        	if (intervalEntry.getValue() == null) {
+        		result.put(intervalEntry.getKey(), 0);
+        		continue;
+        	}
+
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted())
                     {
-                        List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", intervalQueries.get(chunkIndex), String.class).into(new ArrayList<>());  // oddly, it is faster to run a pre-query than to use $lookup
+                        List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).distinct("_id", intervalEntry.getValue(), String.class).into(new ArrayList<>());  // oddly, it is faster to run a pre-query than to use $lookup
                         final ArrayList<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
                         BasicDBList matchList = new BasicDBList();
@@ -1426,13 +1691,14 @@ public class VisualizationService {
                         
                         Iterator<Document> it = mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantRunData.class)).aggregate(pipeline).iterator();
                         if (!it.hasNext())
-                            result.put(rangeMin + (chunkIndex*intervalSize), 0);
+                            result.put(intervalEntry.getKey(), 0);
                         else {
                             Document resultDoc = it.next();
                             int totalCumulated = Double.valueOf(resultDoc.get("valSum").toString()).intValue();
-                            result.put(rangeMin + (chunkIndex*intervalSize), totalCumulated == 0 ? 0 : (totalCumulated / Double.valueOf(resultDoc.get("valCount").toString()).intValue()));
+                            result.put(intervalEntry.getKey(), totalCumulated == 0 ? 0 : (totalCumulated / Double.valueOf(resultDoc.get("valCount").toString()).intValue()));
                         }
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gvfpr.getDisplayedRangeIntervalCount());
+                        intervalEntry.setValue(null); // help GC
                     }
                 }
             };
@@ -1452,7 +1718,7 @@ public class VisualizationService {
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionVcfFieldPlotData treated " + gvfpr.getDisplayedRangeIntervalCount() + " intervals on sequence " + gvfpr.getDisplayedSequence() + " between " + gvfpr.getDisplayedRangeMin() + " and " + gvfpr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionVcfFieldPlotData treated " + threadsToWaitFor.size() + " intervals on sequence " + gvfpr.getDisplayedSequence() + " between " + gvfpr.getDisplayedRangeMin() + " and " + gvfpr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return new TreeMap<Long, Integer>(result);
