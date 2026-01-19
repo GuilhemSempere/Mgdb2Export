@@ -64,7 +64,7 @@ import htsjdk.variant.variantcontext.VariantContext.Type;
 /**
  * The Class PCAExportHandler.
  */
-public class PCAExportHandler extends EigenstratExportHandler implements ExperimentalFeature {
+public class PCAExportHandler extends EigenstratExportHandler {
 
     /**
      * The Constant LOG.
