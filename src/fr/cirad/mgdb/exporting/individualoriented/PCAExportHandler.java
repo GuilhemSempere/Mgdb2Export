@@ -96,7 +96,7 @@ public class PCAExportHandler extends EigenstratExportHandler {
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zipped PCA based on an <a target='_blank' href='https://github.com/argriffing/eigensoft/blob/master/CONVERTF/README'>Eigenstrat</a> format export. Variants with more than 50% missing data are automatically excluded. THIS IS AN EXPERIMENTAL FEATURE!";
+    	return "Exports a zipped PCA based on an <a target='_blank' href='https://github.com/argriffing/eigensoft/blob/master/CONVERTF/README'>Eigenstrat</a> format export. Variants with more than 50% missing data are automatically excluded.";
     }
 
 	/* (non-Javadoc)
