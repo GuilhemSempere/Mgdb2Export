@@ -55,7 +55,6 @@ import fr.cirad.mgdb.exporting.tools.pca.PCACalculator.OptimizedDiskFloatMatrix;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.tools.AlphaNumericComparator;
-import fr.cirad.tools.ExperimentalFeature;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -180,10 +179,9 @@ public class PCAExportHandler extends EigenstratExportHandler {
                 return;
             }
 
-            progress.moveToNextStep();
             ExecutorService executor = Executors.newSingleThreadExecutor();
             Future<FloatPCAResult> future = executor.submit(() -> {
-                return pcaCalc.performSmartSVD(diskMatrix, null, warningOS);
+                return pcaCalc.performSmartSVD(diskMatrix, null, warningOS, progress);
             });
             while (!future.isDone()) {
                 if (progress.isAborted()) {
@@ -277,7 +275,7 @@ public class PCAExportHandler extends EigenstratExportHandler {
      */
     @Override
     public List<String> getStepList() {
-        return Arrays.asList(new String[]{"Extracting data to Eigenstrat format", "Transposing genotype matrix", "Imputing missing values", "Centering and scaling data", "Computing PCA"});
+        return Arrays.asList(new String[]{"Extracting data to Eigenstrat format", "Transposing genotype matrix", "Imputing missing values", "Centering and scaling data"});
     }
 
 	@Override
