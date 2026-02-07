@@ -86,7 +86,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zip archive featuring a <a target='_blank' href='https://www.sglp.uzh.ch/apps/static/MLS/stemmatology/Jukes-Cantor-model_229150204.html'>Jukes-Cantor</a> distance matrix and a <a target='_blank' href='https://en.wikipedia.org/wiki/Newick_format'>Newick</a> file containing a neighbour-joining tree, both based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
+    	return "Exports a zip archive featuring a <a target='_blank' href='https://treethinkers.org/jukes-cantor-model-of-dna-substitution/'>Jukes-Cantor</a> distance matrix and a <a target='_blank' href='https://en.wikipedia.org/wiki/Newick_format'>Newick</a> file containing a neighbour-joining tree, both based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
     }
 
     @Override
