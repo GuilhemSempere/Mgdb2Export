@@ -353,6 +353,8 @@ public class VisualizationService {
         	}
 
             List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            if (!useTempColl)
+	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
             windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
@@ -486,7 +488,6 @@ public class VisualizationService {
                 }
             };
 
-//          System.err.println("submitting for " + progress.getProcessId());
             threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
         }
 
@@ -557,8 +558,9 @@ public class VisualizationService {
         	}
 
         	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
+            if (!useTempColl)
+	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
             windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
-
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
@@ -647,7 +649,8 @@ public class VisualizationService {
         	}
 
             List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
+            if (!useTempColl)
+	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
             windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
