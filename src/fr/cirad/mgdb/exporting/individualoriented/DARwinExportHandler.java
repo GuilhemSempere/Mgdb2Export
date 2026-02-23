@@ -115,7 +115,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
 	    	}
         }
 
-        ZipOutputStream os = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
+        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
 		Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
 		String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
         
@@ -124,8 +124,8 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
             missingGenotype += "\tN";
         String finalMissingGenotype = missingGenotype;
 
-        os.putNextEntry(new ZipEntry(exportName + ".var"));
-        os.write(("@DARwin 5.0 - ALLELIC - " + ploidy + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + markerCount * ploidy + LINE_SEPARATOR + "N°").getBytes());
+        zos.putNextEntry(new ZipEntry(exportName + ".var"));
+        zos.write(("@DARwin 5.0 - ALLELIC - " + ploidy + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + markerCount * ploidy + LINE_SEPARATOR + "N°").getBytes());
 
         short nProgress = 0, nPreviousProgress = 0;
 
@@ -147,7 +147,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                     }
                 }
                 for (int j = 0; j < ploidy; j++) {
-                    os.write(("\t" + markerId).getBytes());
+                    zos.write(("\t" + markerId).getBytes());
                 }
             }
         }
@@ -248,7 +248,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                         if (indLine == null || indLine.length() == 0)
                             LOG.warn("No line to export for individual " + j);
                         else {
-                            os.write(indLine.toString().getBytes());
+                            zos.write(indLine.toString().getBytes());
                             individualLines[j] = new StringBuilder(initialStringBuilderCapacity.get());
                         }
                     }
@@ -270,43 +270,45 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                 }
             warningFile.delete();
         }
-        os.closeEntry();
+        zos.closeEntry();
 
-        os.putNextEntry(new ZipEntry(exportName + ".don"));
+        zos.putNextEntry(new ZipEntry(exportName + ".don"));
         String mdFileContents = exportOutputs == null || exportOutputs.getMetadataFileContents() == null ? "" : exportOutputs.getMetadataFileContents();
         if (mdFileContents.isEmpty())
         	mdFileContents = "individual" + LINE_SEPARATOR + String.join(LINE_SEPARATOR, exportedIndividuals);
     	String[] mdLines = mdFileContents.split(LINE_SEPARATOR);
     	for (int j=0; j<mdLines.length; j++) {
     		if (j == 0)
-    			os.write(("@DARwin 5.0 - DON -" + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + (mdLines[0].split("\t", -1).length) + LINE_SEPARATOR + "N°" + "\t").getBytes());
+    			zos.write(("@DARwin 5.0 - DON -" + LINE_SEPARATOR + exportOutputs.getGenotypeFiles().length + "\t" + (mdLines[0].split("\t", -1).length) + LINE_SEPARATOR + "N°" + "\t").getBytes());
     		else
-    			os.write((j + "\t").getBytes());
-        	os.write((mdLines[j] + LINE_SEPARATOR).getBytes());
+    			zos.write((j + "\t").getBytes());
+        	zos.write((mdLines[j] + LINE_SEPARATOR).getBytes());
     	}
-        os.closeEntry();
+        zos.closeEntry();
+        
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
 
         warningOS.close();
         if (warningFile.length() > 0) {
             progress.addStep("Adding lines to warning file");
             progress.moveToNextStep();
             progress.setPercentageEnabled(false);
-            os.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+            zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
             int nWarningCount = 0;
             BufferedReader in = new BufferedReader(new FileReader(warningFile));
             String sLine;
             while ((sLine = in.readLine()) != null) {
-                os.write((sLine + "\n").getBytes());
+                zos.write((sLine + "\n").getBytes());
                 progress.setCurrentStepProgress(nWarningCount++);
             }
             LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
             in.close();
-            os.closeEntry();
+            zos.closeEntry();
         }
         warningFile.delete();
 
-        os.finish();
-        os.close();
+        zos.finish();
+        zos.close();
         progress.setPercentageEnabled(true);
         progress.setCurrentStepProgress((short) 100);
     }

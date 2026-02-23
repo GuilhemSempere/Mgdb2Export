@@ -45,6 +45,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
+import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
@@ -53,8 +54,11 @@ import fr.cirad.mgdb.exporting.tools.pca.PCACalculator;
 import fr.cirad.mgdb.exporting.tools.pca.PCACalculator.FloatPCAResult;
 import fr.cirad.mgdb.exporting.tools.pca.PCACalculator.OptimizedDiskFloatMatrix;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
+import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.tools.AlphaNumericComparator;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -254,6 +258,34 @@ public class PCAExportHandler extends EigenstratExportHandler {
 	            in.close();
 	            zos.closeEntry();
 	        }
+	        
+	        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+	        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
+	        int nMarkerIndex = 0;
+	        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
+	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
+	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, 10000)) {
+	            progress.addStep("Writing map file");
+	            progress.moveToNextStep();
+		        while (markerCursor.hasNext()) {
+		            Document exportVariant = markerCursor.next();
+		            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
+		            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+		            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+	                String markerId = (String) exportVariant.get("_id");
+		            if (chrom == null)
+		            	unassignedMarkers.add(markerId);
+		            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
+		            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos) + LINE_SEPARATOR).getBytes());
+	
+	                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+		        }
+			}
+	        zos.closeEntry();
+	        
+	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+	
         }
         catch (OutOfMemoryError oome) {
 	    	LOG.error("Not enough RAM to transpose matrix", oome);
@@ -264,6 +296,7 @@ public class PCAExportHandler extends EigenstratExportHandler {
             tempEigenstratFile.delete();
         }
 
+        
         zos.finish();
         zos.close();
         progress.setPercentageEnabled(true);

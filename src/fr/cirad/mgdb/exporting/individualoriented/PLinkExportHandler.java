@@ -177,6 +177,8 @@ public class PLinkExportHandler extends AbstractIndividualOrientedExportHandler 
 	        
 	        if (unassignedMarkers.size() > 0)
 	        	LOG.info("No chromosomal position found for " + unassignedMarkers.size() + " markers " + StringUtils.join(unassignedMarkers, ", "));
+	        
+	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
 	
 	        warningOS.close();
 	        if (warningFile.length() > 0) {

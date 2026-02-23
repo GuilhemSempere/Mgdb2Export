@@ -25,7 +25,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -37,7 +36,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import fr.cirad.mgdb.model.mongo.maintypes.*;
 import org.apache.log4j.Logger;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -47,11 +45,16 @@ import org.springframework.data.mongodb.core.query.Query;
 import com.mongodb.BasicDBList;
 import com.mongodb.BasicDBObject;
 import com.mongodb.client.MongoCollection;
-import com.mongodb.client.MongoCursor;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
+import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
+import fr.cirad.mgdb.model.mongo.maintypes.Sequence;
+import fr.cirad.mgdb.model.mongo.maintypes.SequenceStats;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
@@ -66,13 +69,10 @@ import htsjdk.samtools.SAMSequenceRecord;
 import htsjdk.variant.variantcontext.VariantContext;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
 import htsjdk.variant.vcf.VCFContigHeaderLine;
-import htsjdk.variant.vcf.VCFFilterHeaderLine;
 import htsjdk.variant.vcf.VCFFormatHeaderLine;
 import htsjdk.variant.vcf.VCFHeader;
 import htsjdk.variant.vcf.VCFHeaderLine;
-import htsjdk.variant.vcf.VCFHeaderLineCount;
 import htsjdk.variant.vcf.VCFHeaderLineType;
-import htsjdk.variant.vcf.VCFInfoHeaderLine;
 
 /**
  * The Class VcfExportHandler.
@@ -215,32 +215,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		}
     }
 
-    private static VCFInfoHeaderLine getMostPermissiveInfo(VCFInfoHeaderLine line1, VCFInfoHeaderLine line2) {
-        // Prioritize UNBOUNDED count over specific counts
-        VCFHeaderLineCount count = line1.getCountType() == VCFHeaderLineCount.UNBOUNDED ? 
-            line1.getCountType() : line2.getCountType();
-        
-        // Prioritize String type over others (most permissive)
-        VCFHeaderLineType type = line1.getType() == VCFHeaderLineType.String ? 
-            line1.getType() : line2.getType();
-        
-        String description = line1.getDescription() + " / " + line2.getDescription();
-        
-        return new VCFInfoHeaderLine(line1.getID(), count, type, description);
-    }
-
-    private VCFFormatHeaderLine getMostPermissiveFormat(VCFFormatHeaderLine line1, VCFFormatHeaderLine line2) {
-        VCFHeaderLineCount count = line1.getCountType() == VCFHeaderLineCount.UNBOUNDED ? 
-            line1.getCountType() : line2.getCountType();
-        
-        VCFHeaderLineType type = line1.getType() == VCFHeaderLineType.String ? 
-            line1.getType() : line2.getType();
-        
-        String description = line1.getDescription() + " / " + line2.getDescription();
-        
-        return new VCFFormatHeaderLine(line1.getID(), count, type, description);
-    }
-    
     public File[] writeGenotypeFile(String sModule, Integer nAssemblyId, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport, List<String> sortedIndividuals, List<String> distinctSequenceNames, SAMSequenceDictionary dict, CustomVCFWriter writer) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
@@ -257,75 +231,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 //			writer = new AsyncVariantContextWriter(writer, 3000);
 
 		progress.moveToNextStep();	// done with dictionary
-		MongoCollection<org.bson.Document> vcfHeaderColl = mongoTemplate.getCollection(MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class));
-		Document vcfHeaderQuery = new Document("_id." + VcfHeaderId.FIELDNAME_PROJECT, new Document("$in", projectIDs));
-		long nHeaderCount = vcfHeaderColl.countDocuments(vcfHeaderQuery);
-		MongoCursor<Document> headerCursor = vcfHeaderColl.find(vcfHeaderQuery).iterator();
-
-		Map<String, VCFInfoHeaderLine> mergedInfoHeaders = new LinkedHashMap<>();
-		Map<String, VCFFormatHeaderLine> mergedFormatHeaders = new LinkedHashMap<>();
-		Map<String, VCFFilterHeaderLine> mergedFilterHeaders = new LinkedHashMap<>();
-		Set<VCFHeaderLine> mergedOtherHeaders = new HashSet<>();
-		boolean fWriteCommandLine = true, fWriteEngineHeaders = true;
-
-		while (headerCursor.hasNext()) {
-		    DBVCFHeader dbVcfHeader = DBVCFHeader.fromDocument(headerCursor.next());
-		    
-		    // Merge INFO headers with conflict resolution
-		    for (Map.Entry<String, VCFInfoHeaderLine> entry : dbVcfHeader.getmInfoMetaData().entrySet()) {
-		        String id = entry.getKey();
-		        VCFInfoHeaderLine newLine = entry.getValue();
-		        
-		        if (mergedInfoHeaders.containsKey(id)) {
-		            VCFInfoHeaderLine existing = mergedInfoHeaders.get(id);
-		            if (!existing.equals(newLine)) {
-		                LOG.warn("Conflicting INFO header definition for '" + id + "'. Using most permissive definition.");
-		                // Keep the most permissive (e.g., UNBOUNDED count, String type)
-		                mergedInfoHeaders.put(id, getMostPermissiveInfo(existing, newLine));
-		            }
-		        } else {
-		            mergedInfoHeaders.put(id, newLine);
-		        }
-		    }
-		    
-		    // Merge FORMAT headers with conflict resolution
-		    for (Map.Entry<String, VCFFormatHeaderLine> entry : dbVcfHeader.getmFormatMetaData().entrySet()) {
-		        String id = entry.getKey();
-		        VCFFormatHeaderLine newLine = entry.getValue();
-		        
-		        if (mergedFormatHeaders.containsKey(id)) {
-		            VCFFormatHeaderLine existing = mergedFormatHeaders.get(id);
-		            if (!existing.equals(newLine)) {
-		                LOG.warn("Conflicting FORMAT header definition for '" + id + "'. Using most permissive definition.");
-		                mergedFormatHeaders.put(id, getMostPermissiveFormat(existing, newLine));
-		            }
-		        } else {
-		            mergedFormatHeaders.put(id, newLine);
-		        }
-		    }
-		    
-		    // Merge FILTER headers
-		    for (Map.Entry<String, VCFFilterHeaderLine> entry : dbVcfHeader.getmFilterMetaData().entrySet()) {
-		        mergedFilterHeaders.putIfAbsent(entry.getKey(), entry.getValue());
-		    }
-		    
-		    // Merge other headers
-		    mergedOtherHeaders.addAll(dbVcfHeader.getmOtherMetaData().values());
-		    mergedOtherHeaders.addAll(dbVcfHeader.getmMetaData().values());
-		    
-		    fWriteCommandLine = nHeaderCount == 1 && dbVcfHeader.getWriteCommandLine();
-		    if (!dbVcfHeader.getWriteEngineHeaders())
-		        fWriteEngineHeaders = false;
-		}
-
-		// Reconstruct headerLines from merged maps
-		Set<VCFHeaderLine> headerLines = new HashSet<>();
-		headerLines.addAll(mergedInfoHeaders.values());
-		headerLines.addAll(mergedFormatHeaders.values());
-		headerLines.addAll(mergedFilterHeaders.values());
-		headerLines.addAll(mergedOtherHeaders);
-		headerCursor.close();
-
+        DBVCFHeader mergedHeader = DBVCFHeader.mergeHeaders(mongoTemplate.find(new Query(Criteria.where("_id." + VcfHeaderId.FIELDNAME_PROJECT).in(projectIDs)), Document.class, MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class)).stream().map(doc -> DBVCFHeader.fromDocument(doc)).toList());
+		Set<VCFHeaderLine> headerLines = mergedHeader.getHeaderLines();
 		if (headerLines.size() == 0)
 			headerLines.add(new VCFFormatHeaderLine("GT", 1, VCFHeaderLineType.String, "Genotype"));	// minimum required
 		
@@ -359,13 +266,13 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		}
 
 		VCFHeader header = new VCFHeader(headerLines, sortedIndividuals);
-		header.setWriteCommandLine(fWriteCommandLine);
-		header.setWriteEngineHeaders(fWriteEngineHeaders);
+		header.setWriteCommandLine(mergedHeader.getWriteCommandLine());
+		header.setWriteEngineHeaders(mergedHeader.getWriteEngineHeaders());
 		writer.writeHeader(header);
 
 		HashMap<Integer, Object /*phID*/> phasingIDsByCallSet = new HashMap<>();
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
 				if (markerRunsToWrite.isEmpty())
 					return;
 				

@@ -46,6 +46,8 @@ import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
@@ -141,11 +143,12 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
         Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() : (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) : (varQueryWrapper.getBareQueries().iterator().hasNext() ? new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
 
-		File[] warningFiles = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individualsByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport).getWarningFiles();
+		ExportOutputs outputs = writeGenotypeFile(fSkipHapmapColumns, fWriteAllelesAsIndexes, fShowAlleleSeparator, fEmptyStringForMissingData, zos, sModule, assembly, individualsByPop, workWithSamples, callSetIdToIndividualMap, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport);
 		
         zos.closeEntry();
         
-        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
+        IExportHandler.writeZipEntryFromChunkFiles(zos, outputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+        IExportHandler.writeZipEntryFromChunkFiles(zos, outputs.getWarningFiles(), exportName + "-REMARKS.txt");
 
         zos.finish();
         zos.close();
@@ -154,17 +157,6 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
     
     public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<Integer, String> callSetIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-		Integer projectId = null;
-        for (Callset cs : callSetsToExport) {
-            if (projectId == null)
-                projectId = cs.getProjectId();
-            else if (projectId != cs.getProjectId())
-            {
-                projectId = 0;
-                break;	// more than one project are involved: no header will be written
-            }
-        }
-		
 		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
         os.write(((fSkipHapmapColumns ? "variant" : "rs#") + "\talleles\tchrom\tpos" + (fSkipHapmapColumns ? "" : "\tstrand\tassembly#\tcenter\tprotLSID\tassayLSID\tpanelLSID\tQCcode")).getBytes());
@@ -174,12 +166,21 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         }
         os.write((LINE_SEPARATOR).getBytes());        
         
+    	List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
+        DBVCFHeader mergedHeader = DBVCFHeader.mergeHeaders(mongoTemplate.find(new Query(Criteria.where("_id." + VcfHeaderId.FIELDNAME_PROJECT).in(projectIDs)), Document.class, MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class)).stream().map(doc -> DBVCFHeader.fromDocument(doc)).toList());
+
+        // Identify the field positions for ANN/CSQ
+        Map<String, Integer> annIndices = IExportHandler.getAnnotationIndices(mergedHeader.getmInfoMetaData());
+        final int geneIdx = annIndices.get("GENE");
+        final int consequenceIdx = annIndices.get("CONSEQUENCE");
+        final int featureIdx = annIndices.get("FEATURE");
+        
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		ExportManager.AbstractExportWriter exportWriter = new ExportManager.AbstractExportWriter(false) {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
 	
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
                 markerRunsToWrite.forEach(runsToWrite -> {
@@ -202,8 +203,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                sb.append(idOfVarToWrite).append("\t").append(StringUtils.join(variant.safelyGetKnownAlleles(mongoTemplate), "/") + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + (rp == null ? 0 : rp.getStartSite()) + (fSkipHapmapColumns ? "" : ("\t" + "+\t" + (assembly == null ? "NA" : assembly.getName()) + "\tNA\tNA\tNA\tNA\tNA")));
 
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
-
-		                if (runsToWrite != null)
+		                if (runsToWrite != null) {
 		                	runsToWrite.forEach( run -> {
 		                    	for (Integer callSetId : run.getSampleGenotypes().keySet()) {
 	                                String individualId = callSetIdToIndividualMap.get(callSetId);
@@ -222,6 +222,19 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 									individualGenotypes[individualIndex].add(gtCode);
 		                        }
 		                    });
+		                	
+		                	if (!runsToWrite.isEmpty()) {
+		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
+		                	    Object annObj = info.get("ANN");	// Check for any of the standard annotation keys
+		                	    if (annObj == null) annObj = info.get("CSQ");
+		                	    if (annObj == null) annObj = info.get("EFF");
+		                	    if (annObj != null) {
+		                	        String annString = (annObj instanceof List) ? StringUtils.join((List) annObj, ",") : annObj.toString();
+		                	        if (rp != null)
+		                	            annotationOS.write(IExportHandler.formatAnnotation(idOfVarToWrite, rp.getSequence(), rp.getStartSite(), annString, geneIdx, consequenceIdx, featureIdx).getBytes());
+		                	    }
+		                	}
+		                }
 
 		                int writtenGenotypeCount = 0;
 		                

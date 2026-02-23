@@ -165,6 +165,8 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 		        }
 			}
 	        zos.closeEntry();
+	        
+	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
 	
 	        warningOS.close();
 	        if (warningFile.length() > 0) {
@@ -183,6 +185,7 @@ public class FastaPseudoAlignmentExportHandler extends AbstractIndividualOriente
 	            in.close();
 	            zos.closeEntry();
 	        }
+	        	        
 	        zos.finish();
 	        zos.close();
 	    }
