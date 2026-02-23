@@ -104,7 +104,6 @@ public class AlleleSharingDistanceMatrixCalculator extends UpperTriangleDistance
 
     @Override
     protected int getThreadCount() {
-        // ASD calculation is mostly memory-bound; use more threads
-        return Math.max(1, Runtime.getRuntime().availableProcessors() / 2);
+        return Math.max(1, Runtime.getRuntime().availableProcessors() / 3);
     }
 }

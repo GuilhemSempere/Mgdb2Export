@@ -28,7 +28,6 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
-import java.util.Scanner;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -41,7 +40,6 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
-import com.mongodb.BasicDBObject;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 
@@ -186,7 +184,10 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
 	            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
 	            in.close();
 	            zos.closeEntry();
-	        }	
+	        }
+	        
+	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+
 	        zos.finish();
 	        zos.close();
 	    }

@@ -47,16 +47,11 @@ public class VariantQueryBuilder
 {
     public static final Integer QUERY_IDS_CHUNK_SIZE = 100000;
 
-    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, /*List<String> externallySelectedSeqs, */boolean fForBrowsing) throws Exception {
+    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, boolean fForBrowsing) throws Exception {
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gsvr.getVariantSetId());
         List<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
         String actualSequenceSelection = gsvr.getReferenceName();
-//        if (actualSequenceSelection == null || actualSequenceSelection.length() == 0) {
-//            if (externallySelectedSeqs != null) {
-//                actualSequenceSelection = StringUtils.join(externallySelectedSeqs, ";");
-//            }
-//        }
         List<String> selectedVariantTypes = gsvr.getSelectedVariantTypes().length() == 0 ? null : Arrays.asList(gsvr.getSelectedVariantTypes().split(";"));
         List<String> selectedSequences = Arrays.asList(actualSequenceSelection == null || actualSequenceSelection.length() == 0 ? new String[0] : actualSequenceSelection.split(";"));
         List<String> alleleCountList = gsvr.getAlleleCount().length() == 0 ? null : Arrays.asList(gsvr.getAlleleCount().split(";"));

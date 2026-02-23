@@ -66,7 +66,7 @@ public class JukesCantorDistanceMatrixCalculator extends UpperTriangleDistanceMa
 
     @Override
     protected int getThreadCount() {
-        return Math.max(1, Runtime.getRuntime().availableProcessors() / 4);
+        return Math.max(1, Runtime.getRuntime().availableProcessors() / 3);
     }
 
     private double jukesCantorDistance(byte[] s1, byte[] s2) {

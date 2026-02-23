@@ -26,6 +26,8 @@ import java.io.OutputStream;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
+
+import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -37,10 +39,13 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.log4j.Logger;
+import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
+import com.mongodb.BasicDBList;
+import com.mongodb.client.MongoCursor;
 import com.traviswheeler.ninja.TreeBuilderBinHeap;
 import com.traviswheeler.ninja.TreeNode;
 
@@ -48,6 +53,9 @@ import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.exporting.tools.dist.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
+import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -86,7 +94,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
      */
     @Override
     public String getExportFormatDescription() {
-    	return "Exports a zip archive featuring a <a target='_blank' href='https://www.sglp.uzh.ch/apps/static/MLS/stemmatology/Jukes-Cantor-model_229150204.html'>Jukes-Cantor</a> distance matrix and a <a target='_blank' href='https://en.wikipedia.org/wiki/Newick_format'>Newick</a> file containing a neighbour-joining tree, both based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
+    	return "Exports a zip archive featuring a <a target='_blank' href='https://treethinkers.org/jukes-cantor-model-of-dna-substitution/'>Jukes-Cantor</a> distance matrix and a <a target='_blank' href='https://en.wikipedia.org/wiki/Newick_format'>Newick</a> file containing a neighbour-joining tree, both based on a pseudo-alignment consisting in the concatenation of SNP alleles. Individuals with more than 50% missing data are automatically excluded.";
     }
 
     @Override
@@ -159,8 +167,10 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
 	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
 	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, exportOutputs);
+	        progress.moveToNextStep();
 	        createMatrixEntry(sequenceNames, exportName, distanceMatrix, zos, progress);
-	        createTreeEntry(sequenceNames, exportName, distanceMatrix, zos, progress);
+	        progress.moveToNextStep();
+	        createTreeEntry(sequenceNames, exportName, distanceMatrix, zos);
 
 	        // Add warnings if any
 	        if (progress.getError() == null && !progress.isAborted()) {
@@ -189,6 +199,34 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 	            }
 	        }
 
+	        zos.putNextEntry(new ZipEntry(exportName + ".map"));
+	        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
+	        int nMarkerIndex = 0;
+	        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
+	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
+	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
+	    	Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantDataQueries.isEmpty() ? new Document() : (new Document("$and", tmpVarCollName == null ? variantDataQueries.iterator().next() : (varQueryWrapper.getBareQueries().iterator().hasNext() ? varQueryWrapper.getBareQueries().iterator().next() : new BasicDBList()))), projectionAndSortDoc, nQueryChunkSize)) {
+	            progress.addStep("Writing map file");
+	            progress.moveToNextStep();
+		        while (markerCursor.hasNext()) {
+		            Document exportVariant = markerCursor.next();
+		            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
+		            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+		            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+	                String markerId = (String) exportVariant.get("_id");
+		            if (chrom == null)
+		            	unassignedMarkers.add(markerId);
+		            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
+		            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos) + LINE_SEPARATOR).getBytes());
+	
+	                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
+		        }
+			}
+	        zos.closeEntry();
+	        
+	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+	        
 	        zos.finish();
 	        zos.close();
 	    }
@@ -248,9 +286,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 	    zos.closeEntry();
 	}
 
-    protected void createTreeEntry(List<String> sequenceNames, String exportName, double[][] distanceMatrix, ZipOutputStream zos, ProgressIndicator progress) throws Exception {
-        progress.moveToNextStep();
-
+    protected void createTreeEntry(List<String> sequenceNames, String exportName, double[][] distanceMatrix, ZipOutputStream zos) throws Exception {
         final int n = distanceMatrix.length;
 
         // Upper-triangle int distance matrix
@@ -293,7 +329,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
      */
     @Override
     public List<String> getStepList() {
-    	return Arrays.asList(new String[]{"Converting data to FASTA format", "Calculating Jukes-Cantor distance matrix", "Building neighbor-joining Newick tree using NINJA algorithm"});
+    	return Arrays.asList(new String[]{"Converting data to FASTA format", "Calculating Jukes-Cantor distance matrix", "Writing matrix to archive", "Building neighbor-joining Newick tree using NINJA algorithm"});
     }
 
 	@Override

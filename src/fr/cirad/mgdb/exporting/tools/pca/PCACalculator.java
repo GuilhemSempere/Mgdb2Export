@@ -93,8 +93,7 @@ public class PCACalculator {
         }
         
         if (nMissingDataCount * 100f / line.length() > nMaxMissingDataPercentageForIndividuals) {
-            warningOS.write(("- Excluding variant #" + variantIndex + " from PCA export, it has too much missing data: " + 
-                           (nMissingDataCount * 100 / line.length()) + "%\n").getBytes());
+            warningOS.write(("- Excluding variant #" + variantIndex + " from PCA export, it has too much missing data: " + (nMissingDataCount * 100 / line.length()) + "%\n").getBytes());
             variantsToIgnore.add(variantIndex);
         }
     }
@@ -574,14 +573,12 @@ public class PCACalculator {
     /**
      * Smart SVD: chooses exact or randomized SVD depending on matrix size and memory.
      * 
-     * @param diskMatrix     Segmented disk-backed matrix
-     * @param numComponents  If null: use all components. If not null: use only the first k.
-     * @param warningOS      To write warnings to the caller
+     * @param diskMatrix     	Segmented disk-backed matrix
+     * @param numComponents		If null: use all components. If not null: use only the first k.
+     * @param progress			A ProgressIndicator
+     * @param warningOS      	To write warnings to the caller
      */
-    public FloatPCAResult performSmartSVD(
-            OptimizedDiskFloatMatrix diskMatrix,
-            Integer numComponents,
-            OutputStream warningOS) throws IOException 
+    public FloatPCAResult performSmartSVD(OptimizedDiskFloatMatrix diskMatrix, Integer numComponents, OutputStream warningOS, ProgressIndicator progress) throws IOException 
     {
         int R = diskMatrix.rows();
         int C = diskMatrix.cols();
@@ -589,6 +586,8 @@ public class PCACalculator {
         long bytes = floats * 4L;
         if (canAllocateOnHeap(bytes)) {
             try {
+            	progress.addStep("Computing PCA via exact SVD");
+            	progress.moveToNextStep();
                 return performExactSVD(diskMatrix);
             }
             catch (OutOfMemoryError oom) {
@@ -596,14 +595,13 @@ public class PCACalculator {
                 LOG.warn("Exact SVD failed: " + oom.getMessage());
             }
         } else {
-            warningOS.write(("Skipping exact SVD: not enough heap available for " + (bytes / (1024*1024)) + " MB.\n").getBytes());
+            warningOS.write(("Skipping exact SVD: not enough heap available for " + (bytes / (1024*1024)) + " MB. Falling back to randomized SVD.\n").getBytes());
             LOG.info("Skipping exact SVD due to heap budget.");
         }
 
         // Fallback path: randomized SVD
-        warningOS.write(("Performing randomized SVD (" + (bytes / (1024*1024)) +
-                         " MB)…\n").getBytes());
-
+    	progress.addStep("Computing PCA via randomized SVD");
+    	progress.moveToNextStep();
         return performRandomizedSVD(diskMatrix, numComponents, warningOS);
     }
     
@@ -613,147 +611,92 @@ public class PCACalculator {
     public FloatPCAResult performRandomizedSVD(
             OptimizedDiskFloatMatrix diskMatrix,
             Integer numComponents,
-            OutputStream warningOS) throws IOException 
-    {
+            OutputStream warningOS) throws IOException {
         int R = diskMatrix.rows();
         int C = diskMatrix.cols();
-
-        // Determine target rank
         int k = (numComponents != null ? numComponents : Math.min(R, C));
-        int p = 10;                 // oversampling
-        int l = Math.min(C, k + p); // work dimension
+        int p = 10;
+        int l = Math.min(C, k + p);
 
-        warningOS.write(("Randomized SVD: requested k=" + k + ", oversampling p=" + p + ", l=" + l + "\n").getBytes());
-
-        // ---------------------------------------------------------
-        // Step 1 — Create random Gaussian matrix Ω of shape [C x l]
-        // ---------------------------------------------------------
+        // Create Omega using EJML (better performance)
         Random rng = new Random(42);
-        float[][] omega = new float[C][l];
-        for (int i = 0; i < C; i++)
-            for (int j = 0; j < l; j++)
-                omega[i][j] = (float) rng.nextGaussian();
+        FMatrixRMaj omega = new FMatrixRMaj(C, l);
+        for (int i = 0; i < omega.getNumElements(); i++)
+            omega.data[i] = (float) rng.nextGaussian();
 
-        // ---------------------------------------------------------
-        // Step 2 — Compute Y = A * Ω   of shape [R x l]
-        // ---------------------------------------------------------
-        float[][] Y = new float[R][l];
+        // OPTIMIZATION: Process in blocks to reduce overhead
+        int blockSize = 1024; // Process 1024 rows at a time
+        int numBlocks = (R + blockSize - 1) / blockSize;
+        
+        FMatrixRMaj Y = new FMatrixRMaj(R, l);
         float[] rowBuf = new float[C];
-
-        for (int r = 0; r < R; r++) {
-            diskMatrix.getRow(r, rowBuf);
-            for (int j = 0; j < l; j++) {
-                float sum = 0f;
-                for (int c = 0; c < C; c++)
-                    sum += rowBuf[c] * omega[c][j];
-                Y[r][j] = sum;
+ 
+        // Load matrix in blocks and compute Y = A * omega
+        for (int b = 0; b < numBlocks; b++) {
+            int r0 = b * blockSize;
+            int r1 = Math.min(r0 + blockSize, R);
+            int blockRows = r1 - r0;
+            
+            // Load block into contiguous memory (better cache usage)
+            FMatrixRMaj block = new FMatrixRMaj(blockRows, C);
+            for (int r = r0; r < r1; r++) {
+                diskMatrix.getRow(r, rowBuf);
+                System.arraycopy(rowBuf, 0, block.data, (r - r0) * C, C);
             }
+            
+            // Compute Y_block = block * omega (use EJML - optimized)
+            FMatrixRMaj Yblock = new FMatrixRMaj(blockRows, l);
+            CommonOps_FDRM.mult(block, omega, Yblock);
+            
+            // Copy result to Y
+            System.arraycopy(Yblock.data, 0, Y.data, r0 * l, blockRows * l);
         }
-
-        // Basic sanity log
-        warningOS.write(("Y computed: R=" + R + " l=" + l + "\n").getBytes());
-
-        // ---------------------------------------------------------
-        // Step 3 — Orthonormalize Y → Q using a QR decomposition
-        // ---------------------------------------------------------
-        FMatrixRMaj Ymat = new FMatrixRMaj(Y);  // R x l
-
+        
+        // QR decomposition
         QRDecompositionHouseholderTran_FDRM qr = new QRDecompositionHouseholderTran_FDRM();
-        if (!qr.decompose(Ymat)) {
-            warningOS.write("QR decomposition failed on Y. Aborting randomized SVD.\n".getBytes());
-            throw new RuntimeException("QR decomposition failed on Y.");
-        }
-
-        FMatrixRMaj Q = qr.getQ(null, false); // Q is R x actualCols
-
-        // defensive check on Q
-        if (Q.numRows != R) {
-            warningOS.write(("Warning: Q.numRows != R: Q.numRows=" + Q.numRows + " R=" + R + "\n").getBytes());
-        }
-        warningOS.write(("Q shape: " + Q.numRows + " x " + Q.numCols + "\n").getBytes());
-
-        // ---------------------------------------------------------
-        // Step 4 — Compute B = Qᵀ * A     (shape [qcols x C])
-        //         This requires streaming A row by row.
-        // ---------------------------------------------------------
+        if (!qr.decompose(Y))
+            throw new RuntimeException("QR failed");
+        FMatrixRMaj Q = qr.getQ(null, false);
+        
+        // SECOND PASS: Compute B = Q^T * A
         int qcols = Q.numCols;
-        float[][] B = new float[qcols][C];  // shape [qcols x C]
-
-        for (int r = 0; r < R; r++) {
-            diskMatrix.getRow(r, rowBuf);
-            for (int i = 0; i < qcols; i++) {
-                float q = Q.get(r, i);
-                for (int c = 0; c < C; c++)
-                    B[i][c] += q * rowBuf[c];
+        FMatrixRMaj B = new FMatrixRMaj(qcols, C);
+        for (int b = 0; b < numBlocks; b++) {
+            int r0 = b * blockSize;
+            int r1 = Math.min(r0 + blockSize, R);
+            int blockRows = r1 - r0;
+            
+            // Load block (fast from OS cache!)
+            FMatrixRMaj block = new FMatrixRMaj(blockRows, C);
+            for (int r = r0; r < r1; r++) {
+                diskMatrix.getRow(r, rowBuf);
+                System.arraycopy(rowBuf, 0, block.data, (r - r0) * C, C);
             }
+            
+            // Extract Q block
+            FMatrixRMaj Qblock = CommonOps_FDRM.extract(Q, r0, r1, 0, qcols);
+            
+            // B += Q_block^T * block (use EJML - much faster than manual loops!)
+            FMatrixRMaj Btemp = new FMatrixRMaj(qcols, C);
+            CommonOps_FDRM.multTransA(Qblock, block, Btemp);
+            CommonOps_FDRM.addEquals(B, Btemp);
         }
 
-        warningOS.write(("B computed: " + qcols + " x " + C + "\n").getBytes());
-
-        // ---------------------------------------------------------
-        // Step 5 — SVD on small matrix B (qcols x C)
-        // ---------------------------------------------------------
-        FMatrixRMaj Bmat = new FMatrixRMaj(B);   // qcols x C
-
-        // Use EJML SVD on B
-        SvdImplicitQrDecompose_FDRM svd = new SvdImplicitQrDecompose_FDRM(
-                true,   // compute U
-                false,  // transpose U?
-                true,   // compute V
-                true);  // compute S
-        if (!svd.decompose(Bmat)) {
-            warningOS.write("SVD failed on B matrix. Aborting randomized SVD.\n".getBytes());
-            throw new RuntimeException("SVD failed on B matrix.");
-        }
-
-        FMatrixRMaj Vfull = svd.getV(null, false);      // Expect C x svdCols
-        float[] Sfull = svd.getSingularValues();        // length == svdCols (number of returned singular values)
-
-        // Defensive logging about Vfull/Sfull sizes
-        int vRows = Vfull != null ? Vfull.numRows : 0;
-        int vCols = Vfull != null ? Vfull.numCols : 0;
-        int sLen = Sfull != null ? Sfull.length : 0;
-        warningOS.write(("SVD on B returned Vfull shape: " + vRows + " x " + vCols + ", Sfull.length=" + sLen + "\n").getBytes());
-
-        // Validate expected shapes: Vfull should be C x something
-        if (vRows != C) {
-            warningOS.write(("Warning: expected Vfull.numRows == C (" + C + "), but got " + vRows + ".\n").getBytes());
-            // If rows mismatch, try transpose (defensive), but do not assume anything.
-        }
-
-        // ---------------------------------------------------------
-        // Step 6 — Truncate to k components (top k singular vectors)
-        // ---------------------------------------------------------
-        // Ensure k is not larger than what we actually obtained
-        int effectiveCols = Math.min(vCols, sLen);
-        if (effectiveCols <= 0) {
-            warningOS.write("No singular vectors returned by SVD(B). Aborting.\n".getBytes());
-            throw new RuntimeException("No singular vectors returned by SVD(B).");
-        }
-
-        // clamp k to actual available
-        int requestedK = k;
-        k = Math.min(k, effectiveCols);
-        if (k != requestedK) {
-            warningOS.write(("Clamped k from " + requestedK + " to available " + k + "\n").getBytes());
-        }
-
-        // Extract first k columns of Vfull safely
-        FMatrixRMaj V;
-        if (k == vCols) {
-            // nothing to extract, but ensure shape is C x k
-            V = CommonOps_FDRM.extract(Vfull, 0, Math.min(vRows, C), 0, k);
-        } else {
-            V = CommonOps_FDRM.extract(Vfull, 0, Math.min(vRows, C), 0, k);
-        }
-
-        float[] S = Arrays.copyOf(Sfull, k);
-
-        float[] eigenValues = new float[k];
-        for (int i = 0; i < k; i++)
+        // Final SVD on B
+        SvdImplicitQrDecompose_FDRM svd = new SvdImplicitQrDecompose_FDRM(true, false, true, true);
+        if (!svd.decompose(B))
+            throw new RuntimeException("SVD failed on B");
+        
+        FMatrixRMaj V = svd.getV(null, false);
+        float[] S = svd.getSingularValues();
+        
+        int keff = Math.min(k, S.length);
+        FMatrixRMaj Vk = CommonOps_FDRM.extract(V, 0, V.numRows, 0, keff);
+        
+        float[] eigenValues = new float[keff];
+        for (int i = 0; i < keff; i++)
             eigenValues[i] = (S[i] * S[i]) / (R - 1);
-
-        warningOS.write(("Randomized SVD finished: returning k=" + k + " eigenvalues.\n").getBytes());
-        return new FloatPCAResult(V, eigenValues, S);
+        
+        return new FloatPCAResult(Vk, eigenValues, Arrays.copyOf(S, keff));
     }
 }

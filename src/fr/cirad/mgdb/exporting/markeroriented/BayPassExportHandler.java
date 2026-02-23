@@ -48,8 +48,10 @@ import com.mongodb.client.MongoCollection;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
@@ -150,17 +152,25 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         }
         zos.closeEntry();
 
-        
         zos.putNextEntry(new ZipEntry(exportName + ".baypass"));
         progress.addStep("Writing baypass file");
         progress.moveToNextStep();
+        
+    	List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
+        DBVCFHeader mergedHeader = DBVCFHeader.mergeHeaders(mongoTemplate.find(new Query(Criteria.where("_id." + VcfHeaderId.FIELDNAME_PROJECT).in(projectIDs)), Document.class, MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class)).stream().map(doc -> DBVCFHeader.fromDocument(doc)).toList());
+
+        // Identify the field positions for ANN/CSQ
+        Map<String, Integer> annIndices = IExportHandler.getAnnotationIndices(mergedHeader.getmInfoMetaData());
+        final int geneIdx = annIndices.get("GENE");
+        final int consequenceIdx = annIndices.get("CONSEQUENCE");
+        final int featureIdx = annIndices.get("FEATURE");
 		
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {		
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {		
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -182,7 +192,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 			            String chrom = rp == null ? null : (String) rp.getSequence();
 						
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
-		                if (runsToWrite != null)
+		                if (runsToWrite != null) {
 		                	runsToWrite.forEach( run -> {
 		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
 	                                String individualId = callSetIdToIndividualMap.get(sampleId);
@@ -201,6 +211,19 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
 									individualGenotypes[individualIndex].add(gtCode);
 		                        }
 		                    });
+		                	
+		                	if (!runsToWrite.isEmpty()) {
+		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
+		                	    Object annObj = info.get("ANN");	// Check for any of the standard annotation keys
+		                	    if (annObj == null) annObj = info.get("CSQ");
+		                	    if (annObj == null) annObj = info.get("EFF");
+		                	    if (annObj != null) {
+		                	        String annString = (annObj instanceof List) ? StringUtils.join((List) annObj, ",") : annObj.toString();
+		                	        if (rp != null)
+		                	            annotationOS.write(IExportHandler.formatAnnotation(idOfVarToWrite, rp.getSequence(), rp.getStartSite(), annString, geneIdx, consequenceIdx, featureIdx).getBytes());
+		                	    }
+		                	}
+		                }
 		                
 		        		Map<String, Integer> nbAllel0 = new LinkedHashMap<>();//<population,number>
 		        		Map<String, Integer> nbAllel1 = new LinkedHashMap<>();
@@ -284,8 +307,8 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
         header.append("VariantID").append(" ").append("Chromo").append(" ").append("Position").append(" ").append("Allele1").append(" ").append("Allele2");
         IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + "_snp.code", header.toString());
 
-		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
-        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportManager.getOutputs().getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportManager.getOutputs().getWarningFiles(), exportName + "-REMARKS.txt");
         
         zos.finish();
         zos.close();

@@ -46,10 +46,12 @@ import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.Individual;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
@@ -175,8 +177,8 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 		File[] snpFiles = exportOutputs.getVariantFiles();
 	    IExportHandler.writeZipEntryFromChunkFiles(zos, snpFiles, exportName + ".snp");
 	
-		File[] warningFiles = exportOutputs.getWarningFiles();
-	    IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getWarningFiles(), exportName + "-REMARKS.txt");
 
         progress.addStep("Generating .ind file");
         progress.moveToNextStep();
@@ -203,13 +205,22 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
         ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 
         MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
+        List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
+        DBVCFHeader mergedHeader = DBVCFHeader.mergeHeaders(mongoTemplate.find(new Query(Criteria.where("_id." + VcfHeaderId.FIELDNAME_PROJECT).in(projectIDs)), Document.class, MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class)).stream().map(doc -> DBVCFHeader.fromDocument(doc)).toList());
+
+        // Identify the field positions for ANN/CSQ
+        Map<String, Integer> annIndices = IExportHandler.getAnnotationIndices(mergedHeader.getmInfoMetaData());
+        final int geneIdx = annIndices.get("GENE");
+        final int consequenceIdx = annIndices.get("CONSEQUENCE");
+        final int featureIdx = annIndices.get("FEATURE");
+        
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
 	    final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 	    Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 		
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {		
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {		
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				markerRunsToWrite.forEach(runsToWrite -> {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -231,7 +242,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
 		                variantOS.write((idOfVarToWrite + "\t" + (rp == null ? 0 : rp.getSequence()) + "\t" + 0 + "\t" + (rp == null ? 0 : rp.getStartSite()) + LINE_SEPARATOR).getBytes());
 
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
-		                if (runsToWrite != null)
+		                if (runsToWrite != null) {
     		                runsToWrite.forEach(run -> {
     	                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
                                     String individualId = callSetIdToIndividualMap.get(sampleId);
@@ -250,6 +261,19 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     								individualGenotypes[individualIndex].add(gtCode);
     	                        }
     	                    });
+    		                
+		                	if (!runsToWrite.isEmpty()) {
+		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
+		                	    Object annObj = info.get("ANN");	// Check for any of the standard annotation keys
+		                	    if (annObj == null) annObj = info.get("CSQ");
+		                	    if (annObj == null) annObj = info.get("EFF");
+		                	    if (annObj != null) {
+		                	        String annString = (annObj instanceof List) ? StringUtils.join((List) annObj, ",") : annObj.toString();
+		                	        if (rp != null)
+		                	            annotationOS.write(IExportHandler.formatAnnotation(idOfVarToWrite, rp.getSequence(), rp.getStartSite(), annString, geneIdx, consequenceIdx, featureIdx).getBytes());
+		                	    }
+		                	}
+		                }
 
 	                    boolean fFirstLoopExecution = true;
 		                for (String individual : individualPositions.keySet() /* we use this list because it has the proper ordering */) {

@@ -30,7 +30,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -47,15 +46,14 @@ import com.mongodb.client.MongoCollection;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
+import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
-import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
@@ -122,11 +120,21 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
         for (Callset cs : callSetsToExport)
         	callSetIdToIndividualMap.put(cs.getId(), workWithSamples ? cs.getSampleId() : cs.getIndividual());
 		int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
+		
+		List<Integer> projectIDs = callSetsToExport.stream().map(cs -> cs.getProjectId()).distinct().toList();
+        DBVCFHeader mergedHeader = DBVCFHeader.mergeHeaders(mongoTemplate.find(new Query(Criteria.where("_id." + VcfHeaderId.FIELDNAME_PROJECT).in(projectIDs)), Document.class, MongoTemplateManager.getMongoCollectionName(DBVCFHeader.class)).stream().map(doc -> DBVCFHeader.fromDocument(doc)).toList());
+
+        // Identify the field positions for ANN/CSQ
+        Map<String, Integer> annIndices = IExportHandler.getAnnotationIndices(mergedHeader.getmInfoMetaData());
+        final int geneIdx = annIndices.get("GENE");
+        final int consequenceIdx = annIndices.get("CONSEQUENCE");
+        final int featureIdx = annIndices.get("FEATURE");
+		
 		final AtomicInteger initialStringBuilderCapacity = new AtomicInteger();
 		
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			@Override
-			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream warningOS) throws IOException {	
+			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {	
 				final Iterator<String> exportedVariantIterator = orderedMarkerIDs.iterator();
 				for (Collection<VariantRunData> runsToWrite : markerRunsToWrite) {
                 	String idOfVarToWrite = exportedVariantIterator.next();
@@ -145,8 +153,9 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		                    	idOfVarToWrite = syn;
 		                }
 
+		                ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
-		                if (runsToWrite != null)
+		                if (runsToWrite != null) {
 		                	for (VariantRunData run : runsToWrite) {
 		                    	for (Integer sampleId : run.getSampleGenotypes().keySet()) {
 		                            String individualId = callSetIdToIndividualMap.get(sampleId);
@@ -165,6 +174,19 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 									individualGenotypes[individualIndex].add(gtCode);
 		                        }
 		                    }
+		                	
+		                	if (!runsToWrite.isEmpty()) {
+		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
+		                	    Object annObj = info.get("ANN");	// Check for any of the standard annotation keys
+		                	    if (annObj == null) annObj = info.get("CSQ");
+		                	    if (annObj == null) annObj = info.get("EFF");
+		                	    if (annObj != null) {
+		                	        String annString = (annObj instanceof List) ? StringUtils.join((List) annObj, ",") : annObj.toString();
+		                	        if (rp != null)
+		                	            annotationOS.write(IExportHandler.formatAnnotation(idOfVarToWrite, rp.getSequence(), rp.getStartSite(), annString, geneIdx, consequenceIdx, featureIdx).getBytes());
+		                	    }
+		                	}
+		                }
 
 	                	String refAllele;
 						try {
@@ -176,7 +198,6 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 							refAllele = variant.getKnownAlleles().iterator().next();
 						}
 						
-						ReferencePosition rp = variant.getReferencePosition(nAssemblyId);
 		                String chrom = rp == null ? "0" : rp.getSequence();
 		                long start = rp == null ? 0 : rp.getStartSite();
 		                long end = Type.SNP.toString().equals(variant.getType()) ? start : start + refAllele.length() - 1;
@@ -223,8 +244,8 @@ public class GFFExportHandler extends AbstractMarkerOrientedExportHandler {
 		exportManager.readAndWrite(zos);	
         zos.closeEntry();
 
-		File[] warningFiles = exportManager.getOutputs().getWarningFiles();
-        IExportHandler.writeZipEntryFromChunkFiles(zos, warningFiles, exportName + "-REMARKS.txt");
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportManager.getOutputs().getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
+        IExportHandler.writeZipEntryFromChunkFiles(zos, exportManager.getOutputs().getWarningFiles(), exportName + "-REMARKS.txt");
 
         zos.finish();
         zos.close();
