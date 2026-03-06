@@ -45,6 +45,7 @@ import com.mongodb.BasicDBList;
 import fr.cirad.mgdb.exporting.IExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
+import fr.cirad.mgdb.importing.VcfImport;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
@@ -155,7 +156,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
         progress.setCurrentStepProgress((short) 100);
     }
     
-    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<Integer, String> callSetIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport) throws Exception {
+    public ExportOutputs writeGenotypeFile(boolean fSkipHapmapColumns, boolean fWriteAllelesAsIndexes, boolean fShowAlleleSeparator, boolean fEmptyStringForMissingData, OutputStream os, String sModule, Assembly assembly, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<Integer, String> callSetIdToIndividualMap, Map<String, HashMap<String, Float>> annotationFieldThresholds, ProgressIndicator progress, String tmpVarCollName, Document variantQuery, long markerCount, Map<String, String> markerSynonyms, Collection<Callset> callSetsToExport) throws Exception {
     	MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 		Map<String, Integer> individualPositions = IExportHandler.buildIndividualPositions(callSetsToExport, workWithSamples);
 
@@ -225,9 +226,9 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                	
 		                	if (!runsToWrite.isEmpty()) {
 		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
-		                	    Object annObj = info.get("ANN");	// Check for any of the standard annotation keys
-		                	    if (annObj == null) annObj = info.get("CSQ");
-		                	    if (annObj == null) annObj = info.get("EFF");
+		                	    Object annObj = info.get(VcfImport.ANNOTATION_FIELDNAME_ANN);	// Check for any of the standard annotation keys
+		                	    if (annObj == null) annObj = info.get(VcfImport.ANNOTATION_FIELDNAME_CSQ);
+		                	    if (annObj == null) annObj = info.get(VcfImport.ANNOTATION_FIELDNAME_EFF);
 		                	    if (annObj != null) {
 		                	        String annString = (annObj instanceof List) ? StringUtils.join((List) annObj, ",") : annObj.toString();
 		                	        if (rp != null)
@@ -253,7 +254,7 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		                    String exportedGT = mostFrequentGenotype == null ? (fEmptyStringForMissingData ? "" : missingGenotype) : genotypeStringCache.get(mostFrequentGenotype);
 		                    if (exportedGT == null) {
-		                    	exportedGT = fWriteAllesAsIndexes ? mostFrequentGenotype : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate).stream().map(all -> "N".equals(all) ? "D" : ("NN".equals(all) ? "I" : all)).toList(), !fShowAlleleSeparator && fIsSNP ? "" : "/");
+		                    	exportedGT = fWriteAllelesAsIndexes ? mostFrequentGenotype : StringUtils.join(variant.safelyGetAllelesFromGenotypeCode(mostFrequentGenotype, mongoTemplate).stream().map(all -> "N".equals(all) ? "D" : ("NN".equals(all) ? "I" : all)).toList(), !fShowAlleleSeparator && fIsSNP ? "" : "/");
 		                    	genotypeStringCache.put(mostFrequentGenotype, exportedGT);
 		                    }
 		                    
