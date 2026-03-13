@@ -833,10 +833,10 @@ public class VisualizationService {
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
-    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
-//      System.err.println("Fst : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
-        
+    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {        
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+    	LOG.debug("Calculating Fst on " + info[0] + " with group sizes: " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
+
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
         List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
