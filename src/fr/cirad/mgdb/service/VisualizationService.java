@@ -558,14 +558,13 @@ public class VisualizationService {
         	}
 
         	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            if (!useTempColl)
+            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
 	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
             windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
-
                     Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
                     if (chunk != null) {
                         double value = chunk.getDouble(TJD_RES_TAJIMAD);

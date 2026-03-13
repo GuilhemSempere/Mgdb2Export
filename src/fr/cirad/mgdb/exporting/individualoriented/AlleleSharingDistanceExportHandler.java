@@ -42,6 +42,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 
 import com.mongodb.BasicDBList;
+
 import com.mongodb.client.MongoCursor;
 import com.traviswheeler.ninja.TreeBuilderBinHeap;
 import com.traviswheeler.ninja.TreeNode;
