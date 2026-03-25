@@ -186,7 +186,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
         		throw e;
         }
 
-        if (metadataFieldsToExport != null && !metadataFieldsToExport.isEmpty()) {
+        if (metadataFieldsToExport == null || !metadataFieldsToExport.isEmpty()) {
             String exportName = IExportHandler.buildExportName(sModule, MongoTemplateManager.get(sModule).findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class), markerCount, individualPositions.size(), workWithSamples);        
         	String initialContents = getMetadataContentsPrefix() != null ? getMetadataContentsPrefix() : (workWithSamples ? "sample" : "individual");
         	String metadataContents = IExportHandler.buildMetadataFile(sModule, sExportingUser, individualPositions.keySet(), metadataFieldsToExport, workWithSamples, initialContents);
