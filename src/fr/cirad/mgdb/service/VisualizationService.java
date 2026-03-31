@@ -27,6 +27,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
@@ -92,6 +93,21 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
 
+    final private int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
+	private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;
+	
+	/**
+	 * Set to <= 0 to disable prechecking
+	 * @param threshold
+	 */
+	public void setVariantsPerIntervalThresholdForPrecheck(int threshold) {		
+		this.VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = threshold;
+	}
+	
+	public int getVariantsPerIntervalThresholdForPrecheck() {
+		return this.VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK;
+	}
+
     protected boolean findDefaultRangeMinMax(MgdbDensityRequest mdr, String tmpCollName /* if null, main variant coll is used*/) throws Exception
     {
         if (mdr.getDisplayedRangeMin() != null && mdr.getDisplayedRangeMax() != null) {
@@ -115,9 +131,12 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-
-        ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(processId))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(processId, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "variant density on sequence " + gdr.getDisplayedSequence() });
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
@@ -185,7 +204,7 @@ public class VisualizationService {
             return null;
         
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionDensity treated " + nTotalTreatedVariantCount.get() + " variants on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionDensity treated " + nTotalTreatedVariantCount.get() + " variants on " + (nTempVarCount == 0 ? "main" : "temporary") + " collection for sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return new TreeMap<Long, Long>(result);
@@ -228,8 +247,6 @@ public class VisualizationService {
         }
     }
 
-    final int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
-
     private HashMap<Long, BasicDBObject> getIntervalQueries(
             int nIntervalCount,
             Collection<String> sequences,
@@ -250,7 +267,7 @@ public class VisualizationService {
        
         // if there are really few variants per interval on average we consider it is worth pre-checking for empty intervals
         String refPosPathWithDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-        ExecutorService preCheckExecutor = precheckCollection == null || (float) precheckCollection.countDocuments(new BasicDBObject(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$gte", rangeMin).append("$lte", rangeMax))) / actualIntervalCount > 5 ? null : Executors.newFixedThreadPool(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+        ExecutorService preCheckExecutor = VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK <= 0 || precheckCollection == null || (float) precheckCollection.countDocuments(new BasicDBObject(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$gte", rangeMin).append("$lte", rangeMax))) / actualIntervalCount > VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK  ? null : Executors.newFixedThreadPool(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
         AtomicInteger keptQueryCount = new AtomicInteger(0);
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -309,9 +326,12 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Fst estimate on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Fst estimate on sequence " + gdr.getDisplayedSequence()});
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
@@ -514,10 +534,13 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Tajima's D on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
-
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "Tajima's D on sequence " + gdr.getDisplayedSequence()});
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
+        
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
       
@@ -606,10 +629,13 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "MAF on sequence " + gdr.getDisplayedSequence()});
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
         
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "MAF on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
-
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
 
@@ -638,6 +664,7 @@ public class VisualizationService {
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        AtomicInteger totalVariantsProcessed = new AtomicInteger(0);
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -664,6 +691,7 @@ public class VisualizationService {
                         result.put(intervalEntry.getKey(), Float.NaN);
                     else {
                         int nVariantsInInterval = chunk.getInteger("n");
+                        totalVariantsProcessed.addAndGet(nVariantsInInterval);
                         if (nVariantsInInterval == 0)
                             result.put(intervalEntry.getKey(), Float.NaN);
                         else {
@@ -692,7 +720,7 @@ public class VisualizationService {
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionMaf treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionMaf treated " + totalVariantsProcessed.get() + " variants on " + threadsToWaitFor.size() + " intervals for sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return result;
@@ -784,6 +812,7 @@ public class VisualizationService {
             individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_BIO_ENTITY );
             individualGroup.put("_id", individualGroupId);
             individualGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$addToSet", "$" + GENOTYPE_DATA_S7_GENOTYPE));
+            individualGroup.put(VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$addToSet", "$_id." + VariantRunDataId.FIELDNAME_PROJECT_ID));
             if (keepPosition)
                 individualGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
             pipeline.add(new BasicDBObject("$group", individualGroup));
@@ -791,19 +820,13 @@ public class VisualizationService {
             // Stage 11 : Weed out incoherent genotypes
             pipeline.add(new BasicDBObject("$match", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$size", 1))));
 
-            // Stage 12 : Group back by variant
-            BasicDBObject variantGroup = new BasicDBObject();
-            variantGroup.put("_id", "$_id");
-            BasicDBObject spObject = new BasicDBObject();
-            spObject.put("k", new BasicDBObject("$toString", "$_id." + GENOTYPE_DATA_S10_INDIVIDUALID));
-            spObject.put("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))));
-            variantGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$push", spObject));
-            if (keepPosition)
-                variantGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
-            pipeline.add(new BasicDBObject("$group", variantGroup));
-
-            // Stage 13 : Convert back to sp object
-            pipeline.add(new BasicDBObject("$project", new BasicDBObject("_id", "$_id." + FST_S22_VARIANTID).append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
+            // Stage 12 : Convert back to sp object
+            pipeline.add(new BasicDBObject("$project", new BasicDBObject("_id", "$_id." + FST_S22_VARIANTID)
+            		.append(VariantRunDataId.FIELDNAME_PROJECT_ID, 1).append(GENOTYPE_DATA_S7_POSITION, 1)
+            		.append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", Arrays.asList(Arrays.asList(new BasicDBObject()
+																        .append("k", new BasicDBObject("$toString", "$_id." + GENOTYPE_DATA_S10_INDIVIDUALID))
+																        .append("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))))))))
+            ));
         }
 
         if (fWillNeedToMergeObjects || useTempColl) {  // merge genotypes into a single document per variant
@@ -812,7 +835,6 @@ public class VisualizationService {
             projectMergeGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + (useTempColl && !fGotMultiCallSetIndividuals ? GENOTYPE_DATA_S2_DATA + "." : "") + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
             pipeline.add(new BasicDBObject("$group", projectMergeGroup));
         }
-
         return pipeline;
     }
 
@@ -1182,9 +1204,12 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "missing data percentage on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "missing data percentage on sequence " + gdr.getDisplayedSequence()});
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
@@ -1473,9 +1498,12 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "heterozygosity on sequence " + gdr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating " + (gdr.getDisplayedVariantType() != null ? gdr.getDisplayedVariantType() + " " : "") + "heterozygosity percentage on sequence " + gdr.getDisplayedSequence()});
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
@@ -1596,11 +1624,14 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.getInfoFromId(gvfpr.getVariantSetId(), 2);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating plot data for " + gvfpr.getVcfField() +  " field regarding " + (gvfpr.getDisplayedVariantType() != null ? gvfpr.getDisplayedVariantType() + " " : "") + "variants on sequence " + gvfpr.getDisplayedSequence() });
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
+
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
-
-        ProgressIndicator progress = new ProgressIndicator(token, new String[] {"Calculating plot data for " + gvfpr.getVcfField() +  " field regarding " + (gvfpr.getDisplayedVariantType() != null ? gvfpr.getDisplayedVariantType() + " " : "") + "variants on sequence " + gvfpr.getDisplayedSequence()});
-        ProgressIndicator.registerProgressIndicator(progress);
-
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
         MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gvfpr.getRequest()), false, false, false);
         long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
@@ -1717,10 +1748,13 @@ public class VisualizationService {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(mdr.getVariantSetId());
-        
         String processId = "igvViz_" + token;
-        final ProgressIndicator progress = new ProgressIndicator(processId, new String[] {"Preparing data for visualization"});
-        ProgressIndicator.registerProgressIndicator(progress);
+        final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(processId))
+		    .orElseGet(() -> {
+		    	ProgressIndicator pi = new ProgressIndicator(processId, new String[] { "Preparing data for IGV visualization" });
+		        ProgressIndicator.registerProgressIndicator(pi);
+		    	return pi;
+		    });
 
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();       
         List<List<String>> allCallsetIDs = mdr.getAllCallSetIds();
