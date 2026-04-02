@@ -72,7 +72,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.SampleGenotype;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.model.MgdbDensityRequest;
+import fr.cirad.model.MgdbChartRequest;
 import fr.cirad.model.MgdbVcfFieldPlotRequest;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
@@ -108,7 +108,7 @@ public class VisualizationService {
 		return this.VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK;
 	}
 
-    protected boolean findDefaultRangeMinMax(MgdbDensityRequest mdr, String tmpCollName /* if null, main variant coll is used*/) throws Exception
+    protected boolean findDefaultRangeMinMax(MgdbChartRequest mdr, String tmpCollName /* if null, main variant coll is used*/) throws Exception
     {
         if (mdr.getDisplayedRangeMin() != null && mdr.getDisplayedRangeMax() != null) {
             LOG.info("findDefaultRangeMinMax skipped because min-max values already set");
@@ -127,7 +127,7 @@ public class VisualizationService {
         return retVal;
     }
     
-    public Map<Long, Long> selectionDensity(MgdbDensityRequest gdr, String processId) throws Exception {
+    public Map<Long, Long> selectionDensity(MgdbChartRequest gdr, String processId) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -322,7 +322,7 @@ public class VisualizationService {
         return result;
     }
 
-    public Map<Long, Double> selectionFst(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+    public Map<Long, Double> selectionFst(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -530,7 +530,7 @@ public class VisualizationService {
         return new TreeMap<Long, Double>(result);
     }
     
-    public List<Map<Long, Double>> selectionTajimaD(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+    public List<Map<Long, Double>> selectionTajimaD(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -625,7 +625,7 @@ public class VisualizationService {
         return Arrays.asList(new TreeMap<>(tajimaD), new TreeMap<>(segregatingSites));
     }
     
-    public Map<Long, Float> selectionMaf(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+    public Map<Long, Float> selectionMaf(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -735,7 +735,7 @@ public class VisualizationService {
     private static final String GENOTYPE_DATA_S10_VARIANTID = "vi";
     private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
 
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbDensityRequest gdr, boolean useTempColl, Map<String, List<Callset>> bioEntityToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals, boolean workWithSamples) throws Exception {
+    private List<BasicDBObject> buildGenotypeDataQuery(MgdbChartRequest gdr, boolean useTempColl, Map<String, List<Callset>> bioEntityToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals, boolean workWithSamples) throws Exception {
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
         boolean fWillNeedToMergeObjects = projIDs.length > 1;   // if multiple projects or runs, we will need to merge objects to have just one record per variant
@@ -855,7 +855,7 @@ public class VisualizationService {
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
-    private List<BasicDBObject> buildFstQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {        
+    private List<BasicDBObject> buildFstQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {        
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
     	LOG.debug("Calculating Fst on " + info[0] + " with group sizes: " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
@@ -981,7 +981,7 @@ public class VisualizationService {
     private static final String TJD_RES_SEGREGATINGSITES = "sg";
     private static final String TJD_RES_TAJIMAD = "tjd";
 
-    private List<BasicDBObject> buildTajimaDQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+    private List<BasicDBObject> buildTajimaDQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
 //      System.err.println("Tajima : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -1125,7 +1125,7 @@ public class VisualizationService {
         return pipeline;
     }
 
-    private List<BasicDBObject> buildMafQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+    private List<BasicDBObject> buildMafQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
 //      System.err.println("MAF : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -1200,7 +1200,7 @@ public class VisualizationService {
         return pipeline;
     }
     
-    public Map<Long, Float> selectionMissingData(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+    public Map<Long, Float> selectionMissingData(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -1299,7 +1299,7 @@ public class VisualizationService {
      * @return pipeline stages for missing data calculation
      * @throws Exception if an error occurs
      */
-    private List<BasicDBObject> buildMissingDataQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+    private List<BasicDBObject> buildMissingDataQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
         // -------------------- Extract module and project IDs --------------------
         String[] info = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(Integer::parseInt).toList();
@@ -1407,7 +1407,7 @@ public class VisualizationService {
      * @return pipeline stages for heterozygosity calculation
      * @throws Exception if an error occurs
      */
-    private List<BasicDBObject> buildHeterozygosityQuery(MgdbDensityRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
+    private List<BasicDBObject> buildHeterozygosityQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
@@ -1494,7 +1494,7 @@ public class VisualizationService {
         return pipeline;
     }
     
-    public Map<Long, Float> selectionHeterozygosity(MgdbDensityRequest gdr, String token, boolean workWithSamples) throws Exception {
+    public Map<Long, Float> selectionHeterozygosity(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
@@ -1744,7 +1744,7 @@ public class VisualizationService {
         return new TreeMap<Long, Integer>(result);
     }
 
-    public String igvData(MgdbDensityRequest mdr, String token, boolean workWithSamples) throws Exception {
+    public String igvData(MgdbChartRequest mdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(mdr.getVariantSetId());

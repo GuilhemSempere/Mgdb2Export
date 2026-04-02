@@ -102,21 +102,21 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
         return "U";
     }
 
-    /**
-     * Gets the populations from samples.
-     *
-     * @param sModule the module
-     * @param samples the samples
-     * @return the populations from samples
-     */
-    @SuppressWarnings("unchecked")
-    protected List<String> getPopulationsFromSamples(final String sModule, final List<GenotypingSample> samples) {
-        ArrayList<String> result = new ArrayList<String>();
-        for (Individual individual : MgdbDao.getIndividualsFromSamples(sModule, samples)) {
-            result.add(individual.getPopulation());
-        }
-        return result;
-    }
+//    /**
+//     * Gets the populations from samples.
+//     *
+//     * @param sModule the module
+//     * @param samples the samples
+//     * @return the populations from samples
+//     */
+//    @SuppressWarnings("unchecked")
+//    protected List<String> getPopulationsFromSamples(final String sModule, final List<GenotypingSample> samples) {
+//        ArrayList<String> result = new ArrayList<String>();
+//        for (Individual individual : MgdbDao.getIndividualsFromSamples(sModule, samples)) {
+//            result.add(individual.getPopulation());
+//        }
+//        return result;
+//    }
 
     /* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()

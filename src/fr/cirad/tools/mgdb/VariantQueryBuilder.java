@@ -34,7 +34,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.Run;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.model.MgdbDensityRequest;
+import fr.cirad.model.MgdbChartRequest;
 import fr.cirad.model.MgdbSearchVariantsRequest;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -113,11 +113,11 @@ public class VariantQueryBuilder
             	variantFeatureFilterList.add(new BasicDBObject("$or", posOrSet));
             
             /* Step to match variants position range for visualization (differs from the above, which is for defining the subset of data Gigwa is currently working with: it they are contradictory it still makes sense and means user is trying to view variants outside the range selected in Gigwa) */
-            if (MgdbDensityRequest.class.isAssignableFrom(msvr.getClass())) {
-                variantFeatureFilterList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, ((MgdbDensityRequest) msvr).getDisplayedSequence()));
+            if (MgdbChartRequest.class.isAssignableFrom(msvr.getClass())) {
+                variantFeatureFilterList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, ((MgdbChartRequest) msvr).getDisplayedSequence()));
 
                 BasicDBObject posCrit = new BasicDBObject();
-                Long min = ((MgdbDensityRequest) msvr).getDisplayedRangeMin(), max = ((MgdbDensityRequest) msvr).getDisplayedRangeMax();
+                Long min = ((MgdbChartRequest) msvr).getDisplayedRangeMin(), max = ((MgdbChartRequest) msvr).getDisplayedRangeMax();
                 if (min != null && min != -1)
                     posCrit.put("$gte", min);
                 if (max != null && max != -1)
