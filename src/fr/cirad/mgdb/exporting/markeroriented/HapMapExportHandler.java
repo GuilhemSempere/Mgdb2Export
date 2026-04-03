@@ -33,6 +33,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import fr.cirad.mgdb.model.mongo.maintypes.*;
 import org.apache.commons.lang.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
@@ -49,8 +50,6 @@ import fr.cirad.mgdb.importing.VcfImport;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader;
 import fr.cirad.mgdb.model.mongo.maintypes.DBVCFHeader.VcfHeaderId;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
-import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.AbstractVariantData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
@@ -61,6 +60,8 @@ import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.variant.variantcontext.VariantContext.Type;
+
+import static fr.cirad.mgdb.model.mongo.maintypes.GenotypeCodeManager.decodeGenotypeCode;
 
 /**
  * The Class HapMapExportHandler.
@@ -205,24 +206,50 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
 		                if (runsToWrite != null) {
-		                	runsToWrite.forEach( run -> {
-		                    	for (Integer callSetId : run.getSampleGenotypes().keySet()) {
-	                                String individualId = callSetIdToIndividualMap.get(callSetId);
-	                                Integer individualIndex = individualPositions.get(individualId);
-	                                if (individualIndex == null)
-	                                    continue;   // unwanted sample
-	
-									SampleGenotype sampleGenotype = run.getSampleGenotypes().get(callSetId);
-		                            String gtCode = sampleGenotype.getCode();
-		                            
-									if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individualsByPop, annotationFieldThresholds))
-										continue;	// skip genotype
-									
-									if (individualGenotypes[individualIndex] == null)
-										individualGenotypes[individualIndex] = new ArrayList<String>();
-									individualGenotypes[individualIndex].add(gtCode);
-		                        }
-		                    });
+							runsToWrite.forEach(run -> {
+								for (int projectIdx = 2; projectIdx<=2; projectIdx++){ // FIXME: we need the exact exported projects
+									List<List<Integer>> projectGenotypeArray = run.getGenotypeArray().get(projectIdx);
+									List<List<HashMap<String,Object>>> projectGenotypeAnnotationArray = run.getGenotypeAnnotationArray().get(projectIdx);
+									if (projectGenotypeArray.isEmpty())
+										continue;
+									GenotypingProject project = mongoTemplate.findById(projectIdx, GenotypingProject.class);
+									for (int runIdx=0; runIdx<=2; runIdx++){ // FIXME: we need the exact exported runs (all runs for the project)
+										List<Integer> runGenotypeArray = projectGenotypeArray.get(runIdx);
+										List<HashMap<String,Object>> runGenotypeAnnotationArray = projectGenotypeAnnotationArray.get(runIdx);
+										if (runGenotypeArray.isEmpty())
+											continue;
+										String cuurentRun = project.getRuns().get(runIdx);
+										for (Callset cs : callSetsToExport) {
+											if (cs.getProjectId() != projectIdx || cs.getRun() != cuurentRun)
+												continue;
+											Integer sampleId = cs.getId();
+											String individualId = callSetIdToIndividualMap.get(sampleId);
+											Integer individualIndex = individualPositions.get(individualId);
+											if (individualIndex == null)
+												continue;   // unwanted sample
+
+
+											SampleGenotype sampleGenotype = new SampleGenotype();
+											int indexOfCallsetInsideArrays = cs.getCallSetIndexInsideArray();
+											Integer genotypeCode = runGenotypeArray.get(indexOfCallsetInsideArrays);
+											if (genotypeCode == null)
+												continue;
+											String decodedGenotype = decodeGenotypeCode(genotypeCode, mongoTemplate);
+											HashMap<String, Object> genotypeAnnotationForSample = runGenotypeAnnotationArray.get(indexOfCallsetInsideArrays);
+											sampleGenotype.setCode(decodedGenotype);
+											sampleGenotype.setAdditionalInfo(genotypeAnnotationForSample);
+											String gtCode = sampleGenotype.getCode();
+
+											if (gtCode == null || !VariantData.gtPassesVcfAnnotationFilters(individualId, sampleGenotype, individualsByPop, annotationFieldThresholds))
+												continue;    // skip genotype
+
+											if (individualGenotypes[individualIndex] == null)
+												individualGenotypes[individualIndex] = new ArrayList<String>();
+											individualGenotypes[individualIndex].add(gtCode);
+										}
+									}
+								}
+							});
 		                	
 		                	if (!runsToWrite.isEmpty()) {
 		                	    Map<String, Object> info = runsToWrite.iterator().next().getAdditionalInfo();
