@@ -207,20 +207,20 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 		                List<String>[] individualGenotypes = new ArrayList[individualPositions.size()];
 		                if (runsToWrite != null) {
 							runsToWrite.forEach(run -> {
-								for (int projectIdx = 2; projectIdx<=2; projectIdx++){ // FIXME: we need the exact exported projects
+								for (int projectIdx = 1; projectIdx<=1; projectIdx++){ // FIXME: we need the exact exported projects
 									List<List<Integer>> projectGenotypeArray = run.getGenotypeArray().get(projectIdx);
 									List<List<HashMap<String,Object>>> projectGenotypeAnnotationArray = run.getGenotypeAnnotationArray().get(projectIdx);
 									if (projectGenotypeArray.isEmpty())
 										continue;
 									GenotypingProject project = mongoTemplate.findById(projectIdx, GenotypingProject.class);
-									for (int runIdx=0; runIdx<=2; runIdx++){ // FIXME: we need the exact exported runs (all runs for the project)
+									for (int runIdx=0; runIdx<=0; runIdx++){ // FIXME: we need the exact exported runs (all runs for the project)
 										List<Integer> runGenotypeArray = projectGenotypeArray.get(runIdx);
 										List<HashMap<String,Object>> runGenotypeAnnotationArray = projectGenotypeAnnotationArray.get(runIdx);
 										if (runGenotypeArray.isEmpty())
 											continue;
-										String cuurentRun = project.getRuns().get(runIdx);
-										for (Callset cs : callSetsToExport) {
-											if (cs.getProjectId() != projectIdx || cs.getRun() != cuurentRun)
+										String currentRun = project.getRuns().get(runIdx);
+										for (Callset cs : callSetsToExport) { // FIXME: Might be better to start by this loop and choose run and project accordingly?
+											if (cs.getProjectId() != projectIdx || cs.getRun() != currentRun)
 												continue;
 											Integer sampleId = cs.getId();
 											String individualId = callSetIdToIndividualMap.get(sampleId);
