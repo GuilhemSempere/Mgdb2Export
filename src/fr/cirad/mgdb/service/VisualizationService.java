@@ -155,7 +155,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, nTempVarCount == 0 ? null : tmpVarColl.getNamespace().getCollectionName())) {
-                progress.setError("selectionDensity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionDensity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
                 return result;
             }
 
@@ -352,7 +352,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionFst: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionFst: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
                 return result;
             }
 
@@ -562,7 +562,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionTajimaD: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionTajimaD: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
                 return new ArrayList<>();
             }
 
@@ -656,7 +656,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionMaf: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionMaf: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
                 return result;
             }
 
@@ -1231,7 +1231,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionMissingData: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionMissingData: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
                 return result;
             }
         
@@ -1525,7 +1525,7 @@ public class VisualizationService {
 
         if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
             if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionHeterozygosity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are not in sync with interface filters (in which case, try re-applying filtersn).");
+                progress.setError("selectionHeterozygosity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are not in sync with interface filters (in which case, try re-applying filters).");
                 return result;
             }
 
