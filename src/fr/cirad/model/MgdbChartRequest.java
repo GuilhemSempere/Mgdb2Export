@@ -20,7 +20,7 @@ package fr.cirad.model;
  *
  * @author petel, sempere
  */
-public class MgdbDensityRequest extends MgdbSearchVariantsRequest {
+public class MgdbChartRequest extends MgdbSearchVariantsRequest {
 
     private String displayedSequence;
     private Long displayedRangeMin;
@@ -28,7 +28,7 @@ public class MgdbDensityRequest extends MgdbSearchVariantsRequest {
     private Integer displayedRangeIntervalCount;
     private String displayedVariantType;
 
-	public MgdbDensityRequest(){
+	public MgdbChartRequest(){
         super();
     }
     

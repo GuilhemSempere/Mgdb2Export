@@ -20,7 +20,7 @@ package fr.cirad.model;
  *
  * @author petel, sempere
  */
-public class MgdbVcfFieldPlotRequest extends MgdbDensityRequest {
+public class MgdbVcfFieldPlotRequest extends MgdbChartRequest {
 
     private String vcfField;
     

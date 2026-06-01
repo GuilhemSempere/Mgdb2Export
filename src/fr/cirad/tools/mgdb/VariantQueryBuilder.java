@@ -34,7 +34,7 @@ import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
 import fr.cirad.mgdb.model.mongo.subtypes.Run;
 import fr.cirad.mgdb.model.mongo.subtypes.VariantRunDataId;
 import fr.cirad.mgdb.model.mongodao.MgdbDao;
-import fr.cirad.model.MgdbDensityRequest;
+import fr.cirad.model.MgdbChartRequest;
 import fr.cirad.model.MgdbSearchVariantsRequest;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
@@ -47,15 +47,15 @@ public class VariantQueryBuilder
 {
     public static final Integer QUERY_IDS_CHUNK_SIZE = 100000;
 
-    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest gsvr, boolean fForBrowsing) throws Exception {
-        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gsvr.getVariantSetId());
+    static public VariantQueryWrapper buildVariantDataQuery(MgdbSearchVariantsRequest msvr, boolean fForBrowsing) throws Exception {
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(msvr.getVariantSetId());
         List<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-        String actualSequenceSelection = gsvr.getReferenceName();
-        List<String> selectedVariantTypes = gsvr.getSelectedVariantTypes().length() == 0 ? null : Arrays.asList(gsvr.getSelectedVariantTypes().split(";"));
+        String actualSequenceSelection = msvr.getReferenceName();
+        List<String> selectedVariantTypes = msvr.getSelectedVariantTypes().length() == 0 ? null : Arrays.asList(msvr.getSelectedVariantTypes().split(";"));
         List<String> selectedSequences = Arrays.asList(actualSequenceSelection == null || actualSequenceSelection.length() == 0 ? new String[0] : actualSequenceSelection.split(";"));
-        List<String> alleleCountList = gsvr.getAlleleCount().length() == 0 ? null : Arrays.asList(gsvr.getAlleleCount().split(";"));
-        List<String> selectedVariantIds = gsvr.getSelectedVariantIds().length() == 0 ? null : Arrays.asList(gsvr.getSelectedVariantIds().split(";"));
+        List<String> alleleCountList = msvr.getAlleleCount().length() == 0 ? null : Arrays.asList(msvr.getAlleleCount().split(";"));
+        List<String> selectedVariantIds = msvr.getSelectedVariantIds().length() == 0 ? null : Arrays.asList(msvr.getSelectedVariantIds().split(";"));
 
         Collection<BasicDBList> queries = new ArrayList<>();
         MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
@@ -97,10 +97,10 @@ public class VariantQueryBuilder
             	ArrayList<BasicDBObject> posAndList = new ArrayList<>();
 
                 /* match variants that have a position included in the specified range */
-                if (gsvr.getStart() != null && gsvr.getStart() != -1)
-                	posAndList.add(new BasicDBObject(leftBound, new BasicDBObject("$gte", gsvr.getStart())));
-                if (gsvr.getEnd() != null && gsvr.getEnd() != -1)
-                	posAndList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$lte", gsvr.getEnd())));
+                if (msvr.getStart() != null && msvr.getStart() != -1)
+                	posAndList.add(new BasicDBObject(leftBound, new BasicDBObject("$gte", msvr.getStart())));
+                if (msvr.getEnd() != null && msvr.getEnd() != -1)
+                	posAndList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$lte", msvr.getEnd())));
                 
                 /* match selected chromosomes */
                 if (selectedSequences != null && selectedSequences.size() > 0)
@@ -113,11 +113,11 @@ public class VariantQueryBuilder
             	variantFeatureFilterList.add(new BasicDBObject("$or", posOrSet));
             
             /* Step to match variants position range for visualization (differs from the above, which is for defining the subset of data Gigwa is currently working with: it they are contradictory it still makes sense and means user is trying to view variants outside the range selected in Gigwa) */
-            if (MgdbDensityRequest.class.isAssignableFrom(gsvr.getClass())) {
-                variantFeatureFilterList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, ((MgdbDensityRequest) gsvr).getDisplayedSequence()));
+            if (MgdbChartRequest.class.isAssignableFrom(msvr.getClass())) {
+                variantFeatureFilterList.add(new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, ((MgdbChartRequest) msvr).getDisplayedSequence()));
 
                 BasicDBObject posCrit = new BasicDBObject();
-                Long min = ((MgdbDensityRequest) gsvr).getDisplayedRangeMin(), max = ((MgdbDensityRequest) gsvr).getDisplayedRangeMax();
+                Long min = ((MgdbChartRequest) msvr).getDisplayedRangeMin(), max = ((MgdbChartRequest) msvr).getDisplayedRangeMax();
                 if (min != null && min != -1)
                     posCrit.put("$gte", min);
                 if (max != null && max != -1)
