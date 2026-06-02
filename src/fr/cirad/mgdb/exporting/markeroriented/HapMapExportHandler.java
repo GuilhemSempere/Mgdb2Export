@@ -213,7 +213,9 @@ public class HapMapExportHandler extends AbstractMarkerOrientedExportHandler {
 									if (projectGenotypeArray.isEmpty())
 										continue;
 									GenotypingProject project = mongoTemplate.findById(projectIdx, GenotypingProject.class);
-									for (int runIdx=0; runIdx<=0; runIdx++){ // FIXME: we need the exact exported runs (all runs for the project)
+									List<String> projectRuns = project.getRuns();
+									int numberOfRunsForProject = projectRuns!=null? projectRuns.size() : 0;
+									for (int runIdx=0; runIdx<numberOfRunsForProject; runIdx++){ // FIXME: we need the exact exported runs (all runs for the project)
 										List<Integer> runGenotypeArray = projectGenotypeArray.get(runIdx);
 										List<HashMap<String,Object>> runGenotypeAnnotationArray = projectGenotypeAnnotationArray.get(runIdx);
 										if (runGenotypeArray.isEmpty())
