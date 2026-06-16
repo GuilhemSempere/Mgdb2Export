@@ -275,7 +275,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
 				if (markerRunsToWrite.isEmpty())
 					return;
-				System.out.println(markerRunsToWrite);
 				CustomVCFWriter chunkWriter = new CustomVCFWriter(null, genotypeOS, null, false, false, true);
 				chunkWriter.accountForHeaderWithoutWritingIt(header);
 
@@ -300,7 +299,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		    					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
             					try
             					{
-									System.out.println("To variant context for variant with ID: " + idOfVarToWrite);
             		                vcChunks[nChunkIndex][nVariantIndex++] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), callSetsToExport, individualPositions, individualsByPop, workWithSamples, annotationFieldThresholds, phasingIDsByCallSet, warningOS, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite));
             					}
             					catch (Exception e)

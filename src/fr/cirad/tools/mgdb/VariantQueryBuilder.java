@@ -68,7 +68,7 @@ public class VariantQueryBuilder
             // Filter on project
             if (Helper.estimDocCount(mongoTemplate, GenotypingProject.class) != 1) {
             	projectQueryForVar = new BasicDBObject(VariantData.FIELDNAME_RUNS + "." + Run.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs));
-            	projectQueryForVrd = new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs));
+            	//projectQueryForVrd = new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$in", projIDs));
             }
             
             /* Step to match selected variant types */
