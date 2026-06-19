@@ -212,8 +212,8 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 		        while (markerCursor.hasNext()) {
 		            Document exportVariant = markerCursor.next();
 		            Document refPos = (Document) Helper.readPossiblyNestedField(exportVariant, refPosPath, ";", null);
-		            Long pos = refPos == null ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
-		            String chrom = refPos == null ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
+		            Long pos = refPos == null || refPos.isEmpty() ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
+		            String chrom = refPos == null || refPos.isEmpty() ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
 	                String markerId = (String) exportVariant.get("_id");
 		            if (chrom == null)
 		            	unassignedMarkers.add(markerId);

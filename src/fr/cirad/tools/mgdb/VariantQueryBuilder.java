@@ -53,7 +53,7 @@ public class VariantQueryBuilder
 
         String actualSequenceSelection = msvr.getReferenceName();
         List<String> selectedVariantTypes = msvr.getSelectedVariantTypes().length() == 0 ? null : Arrays.asList(msvr.getSelectedVariantTypes().split(";"));
-        List<String> selectedSequences = Arrays.asList(actualSequenceSelection == null || actualSequenceSelection.length() == 0 ? new String[0] : actualSequenceSelection.split(";"));
+        List<String> selectedSequences = actualSequenceSelection == null ? new ArrayList<>() : Helper.split(actualSequenceSelection, ";").stream().map(s -> s.isBlank() ? null : s).toList();
         List<String> alleleCountList = msvr.getAlleleCount().length() == 0 ? null : Arrays.asList(msvr.getAlleleCount().split(";"));
         List<String> selectedVariantIds = msvr.getSelectedVariantIds().length() == 0 ? null : Arrays.asList(msvr.getSelectedVariantIds().split(";"));
 
