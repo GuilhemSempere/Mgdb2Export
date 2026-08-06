@@ -275,7 +275,6 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
 				if (markerRunsToWrite.isEmpty())
 					return;
-				
 				CustomVCFWriter chunkWriter = new CustomVCFWriter(null, genotypeOS, null, false, false, true);
 				chunkWriter.accountForHeaderWithoutWritingIt(header);
 
