@@ -18,7 +18,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.ejml.data.FMatrixRMaj;
 import org.ejml.dense.row.CommonOps_FDRM;
 import org.ejml.dense.row.decomposition.svd.SvdImplicitQrDecompose_FDRM;
@@ -28,7 +29,7 @@ import fr.cirad.tools.ProgressIndicator;
 
 public class PCACalculator {
     
-    static private final Logger LOG = Logger.getLogger(PCACalculator.class);
+    static private final Logger LOG = LoggerFactory.getLogger(PCACalculator.class);
     
     private int nMaxMissingDataPercentageForIndividuals = 50;
 

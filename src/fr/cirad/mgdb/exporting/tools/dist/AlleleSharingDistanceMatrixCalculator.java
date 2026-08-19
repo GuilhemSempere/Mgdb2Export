@@ -2,7 +2,8 @@ package fr.cirad.mgdb.exporting.tools.dist;
 
 import java.util.Arrays;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import fr.cirad.tools.ProgressIndicator;
 
@@ -20,7 +21,7 @@ import fr.cirad.tools.ProgressIndicator;
  */
 public class AlleleSharingDistanceMatrixCalculator extends UpperTriangleDistanceMatrixCalculator {
 
-	private static final Logger LOG = Logger.getLogger(UpperTriangleDistanceMatrixCalculator.class);
+	private static final Logger LOG = LoggerFactory.getLogger(UpperTriangleDistanceMatrixCalculator.class);
 	
     private final byte[][] genotypes;
     private final int nMarkers;

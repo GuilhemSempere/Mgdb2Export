@@ -37,7 +37,8 @@ import java.util.concurrent.Future;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.ejml.data.FMatrixRMaj;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -72,7 +73,7 @@ public class PCAExportHandler extends EigenstratExportHandler {
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(PCAExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(PCAExportHandler.class);
 
     private static final int numoutevec = 20;
     

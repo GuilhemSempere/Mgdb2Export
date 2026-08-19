@@ -30,7 +30,8 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -61,7 +62,7 @@ public class BEDExportHandler extends AbstractMarkerOrientedExportHandler
 {
 	
 	/** The Constant LOG. */
-	static final Logger LOG = Logger.getLogger(BEDExportHandler.class);
+	static final Logger LOG = LoggerFactory.getLogger(BEDExportHandler.class);
 	
 	/* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()

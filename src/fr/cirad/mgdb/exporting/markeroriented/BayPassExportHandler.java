@@ -37,7 +37,8 @@ import java.util.zip.ZipOutputStream;
 
 import fr.cirad.mgdb.model.mongo.maintypes.*;
 import org.apache.commons.lang.StringUtils;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -69,7 +70,7 @@ public class BayPassExportHandler extends AbstractMarkerOrientedExportHandler {
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(BayPassExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(BayPassExportHandler.class);
 
     public static final String missingGenotype = "NN";
     

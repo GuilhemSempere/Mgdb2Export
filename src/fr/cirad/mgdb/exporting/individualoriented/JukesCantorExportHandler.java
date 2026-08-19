@@ -38,7 +38,8 @@ import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -68,7 +69,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 	private int nMaxMissingDataPercentageForIndividuals = 50;
 	private final static Pattern missingAllelePattern = Pattern.compile("[N-]");
 	
-    private static final Logger LOG = Logger.getLogger(JukesCantorExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(JukesCantorExportHandler.class);
 
     public static String MATRIX_EXTENSION= "mtx";
     public static String NEWICK_EXTENSION = "nwk";

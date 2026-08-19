@@ -39,8 +39,9 @@ import java.util.TreeMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-import org.apache.log4j.Logger;
 import org.bson.Document;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.context.annotation.ClassPathScanningCandidateComponentProvider;
 import org.springframework.core.type.filter.AssignableTypeFilter;
@@ -66,7 +67,7 @@ public abstract class AbstractIndividualOrientedExportHandler implements IExport
 {
 	
 	/** The Constant LOG. */
-	private static final Logger LOG = Logger.getLogger(AbstractIndividualOrientedExportHandler.class);
+	private static final Logger LOG = LoggerFactory.getLogger(AbstractIndividualOrientedExportHandler.class);
 	
 	/** The individual oriented export handlers. */
 	static private TreeMap<String, AbstractIndividualOrientedExportHandler> individualOrientedExportHandlers = null;

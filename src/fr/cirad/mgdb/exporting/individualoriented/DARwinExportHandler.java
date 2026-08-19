@@ -33,7 +33,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -60,7 +61,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(DARwinExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(DARwinExportHandler.class);
 
     /* (non-Javadoc)
      * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()
@@ -225,7 +226,7 @@ public class DARwinExportHandler extends AbstractIndividualOrientedExportHandler
                                 try {
                                     in.close();
                                 } catch (IOException e) {
-                                    LOG.warn(e);
+                                    LOG.warn(e.getMessage());
                                 }
                         }
                     }

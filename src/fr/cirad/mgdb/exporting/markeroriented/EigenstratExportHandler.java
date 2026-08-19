@@ -35,7 +35,8 @@ import java.util.zip.ZipOutputStream;
 
 import fr.cirad.mgdb.model.mongo.maintypes.*;
 import org.apache.commons.lang.StringUtils;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.brapi.v2.model.Call;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -70,7 +71,7 @@ public class EigenstratExportHandler extends AbstractMarkerOrientedExportHandler
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(EigenstratExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(EigenstratExportHandler.class);
 
     /**
      * The Constant EIGENSTRAT_FORMAT.

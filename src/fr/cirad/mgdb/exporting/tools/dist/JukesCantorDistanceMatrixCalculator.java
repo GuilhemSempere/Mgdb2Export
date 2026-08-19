@@ -3,7 +3,8 @@ package fr.cirad.mgdb.exporting.tools.dist;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import fr.cirad.tools.ProgressIndicator;
 
@@ -18,7 +19,7 @@ import fr.cirad.tools.ProgressIndicator;
  */
 public class JukesCantorDistanceMatrixCalculator extends UpperTriangleDistanceMatrixCalculator {
 
-	private static final Logger LOG = Logger.getLogger(JukesCantorDistanceMatrixCalculator.class);
+	private static final Logger LOG = LoggerFactory.getLogger(JukesCantorDistanceMatrixCalculator.class);
 	
     private final byte[][] sequences;
     private final int seqLen;

@@ -21,7 +21,7 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 
-import javax.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletRequest;
 
 import org.codehaus.jackson.annotate.JsonIgnoreProperties;
 import org.ga4gh.methods.SearchVariantsRequest;

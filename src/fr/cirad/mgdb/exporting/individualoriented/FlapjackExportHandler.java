@@ -33,7 +33,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 import org.apache.commons.lang.StringUtils;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -64,7 +65,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(FlapjackExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(FlapjackExportHandler.class);
 
     /* (non-Javadoc)
      * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()
@@ -278,7 +279,7 @@ public class FlapjackExportHandler extends AbstractIndividualOrientedExportHandl
                                 try {
                                     in.close();
                                 } catch (IOException e) {
-                                    LOG.warn(e);
+                                    LOG.warn(e.getMessage());
                                 }               
                         }
 

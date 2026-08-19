@@ -20,7 +20,8 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import htsjdk.variant.variantcontext.VariantContext.Type;
 
@@ -32,7 +33,7 @@ public class NexusPseudoAlignmentExportHandler extends PhylipPseudoAlignmentExpo
     /**
      * The Constant LOG.
      */
-    private static final Logger LOG = Logger.getLogger(NexusPseudoAlignmentExportHandler.class);
+    private static final Logger LOG = LoggerFactory.getLogger(NexusPseudoAlignmentExportHandler.class);
 
     /**
      * The supported variant types.

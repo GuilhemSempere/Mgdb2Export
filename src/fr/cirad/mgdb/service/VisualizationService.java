@@ -32,7 +32,8 @@ import java.util.stream.IntStream;
 
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang.StringUtils;
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -81,7 +82,7 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 
 @Component
 public class VisualizationService {
-    protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
+    protected static final Logger LOG = LoggerFactory.getLogger(VisualizationService.class);
 
     final private int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
 	private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;

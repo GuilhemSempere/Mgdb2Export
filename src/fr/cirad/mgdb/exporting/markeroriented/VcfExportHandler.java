@@ -36,7 +36,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-import org.apache.log4j.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -80,7 +81,7 @@ import htsjdk.variant.vcf.VCFHeaderLineType;
 public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 
 	/** The Constant LOG. */
-	private static final Logger LOG = Logger.getLogger(VcfExportHandler.class);
+	private static final Logger LOG = LoggerFactory.getLogger(VcfExportHandler.class);
 
 	/* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()
