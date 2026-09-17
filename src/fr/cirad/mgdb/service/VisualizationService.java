@@ -1349,11 +1349,20 @@ public class VisualizationService {
         
         // -------------------- $project: count non-missing individuals --------------------
         boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());	// when true we are sure there is only data for the involved bio-entities
-        String gtFieldPathToCheck = "$$s" + (fGotMultiCallSetIndividuals ? ".v.gt" : "");
+        // Every selected individual/sample must be counted against the full population regardless
+        // of whether buildGenotypeDataQuery's reconstructed "sp" actually carries an entry for them
+        // (a callset whose run never touched this variant, or whose multiple callsets disagreed and
+        // got weeded out, is otherwise silently absent from $objectToArray("$sp") - which excludes
+        // it from both numerator AND denominator instead of correctly counting it as missing).
+        // getFullPathToGenotypes builds one literal dotted-path per selected individual regardless of
+        // callset count ("$sp.<callsetId or individualId>.gt"), which evaluates to null for an absent
+        // key just as it does for an explicit null value - the same dense/pooled semantics the
+        // single-callset case already relied on.
+        String gtFieldPathToCheck = "$$s";
         DBObject cond = new BasicDBObject("$and", Arrays.asList(new BasicDBObject("$ne", Arrays.asList(new BasicDBObject("$type", gtFieldPathToCheck), "missing")), new BasicDBObject("$ne", Arrays.asList(gtFieldPathToCheck, null))));
         DBObject filter =
             new BasicDBObject("$filter",
-                new BasicDBObject("input", fGotMultiCallSetIndividuals ? new BasicDBObject("$objectToArray", "$sp") : getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals))
+                new BasicDBObject("input", getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals))
                     .append("as", "s")
                     .append("cond", cond)
             );
@@ -1611,7 +1620,11 @@ public class VisualizationService {
         while (indIt.hasNext()) {
             String individualOrSample = indIt.next(), materialRefToUse = null;
             List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
-           	materialRefToUse = callSets.size() == 1 ? "" + callSets.get(0).getId() : individualOrSample;
+            // An individual/sample selected by the caller may have no callset at all for the
+            // project(s)/run(s) currently in scope (e.g. a stale cross-project selection) - fall
+            // back to its own id, same as the multi-callset case, so the resulting path simply
+            // resolves to nothing in "sp" instead of throwing, correctly reading back as missing.
+           	materialRefToUse = callSets != null && callSets.size() == 1 ? "" + callSets.get(0).getId() : individualOrSample;
             String pathToGT = materialRefToUse + "." + TJD_S18_GENOTYPE;
             String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
             result.add(fullPathToGT);
