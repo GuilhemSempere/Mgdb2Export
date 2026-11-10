@@ -79,8 +79,8 @@ import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryBuilder;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
+import fr.cirad.tools.query.AdaptiveTaskSubmitter;
 import fr.cirad.tools.query.GroupedExecutor;
-import fr.cirad.tools.query.GroupedExecutor.TaskWrapper;
 import fr.cirad.tools.security.base.AbstractTokenManager;
 
 /**
@@ -92,6 +92,24 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 @Component
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
+
+    /**
+     * Number of concurrent chunk queries a chart starts from, and never goes below, when tuned (see createChartSubmitter()). Going lower
+     * would mostly happen while other operations load the server, so that a chart would end up with too few queries in flight to get
+     * its share of the server. It is kept low because charts on databases with many samples saturate the server early (each chunk
+     * query then being costly), and starting above that point would bias the reference latency.
+     */
+    static final int MIN_CHART_CONCURRENCY = 10;
+
+    /**
+     * Creates the submitter through which a chart hands its interval queries to an executor obtained from MongoTemplateManager.getExecutor().
+     * When maxQueryThreads_&lt;host&gt; is configured, all of them are queued at once, the shared pool's size bounding how many run at a time
+     * and its threads being shared fairly between concurrent operations, as for searches (tuning that number proved slower there).
+     * Otherwise, it is tuned from measured latency, starting from (and never going below) MIN_CHART_CONCURRENCY.
+     */
+    private static AdaptiveTaskSubmitter createChartSubmitter(ExecutorService executor, String taskGroup) {
+        return executor instanceof GroupedExecutor ? AdaptiveTaskSubmitter.withoutLimit((GroupedExecutor) executor, taskGroup) : new AdaptiveTaskSubmitter(executor, taskGroup, MIN_CHART_CONCURRENCY, MIN_CHART_CONCURRENCY);
+    }
 
     final private int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
 	private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;
@@ -160,11 +178,11 @@ public class VisualizationService {
             }
 
         final AtomicInteger nTotalTreatedVariantCount = new AtomicInteger(0);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
 
         final ProgressIndicator finalProgress = progress;
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, null);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
@@ -181,24 +199,22 @@ public class VisualizationService {
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                     }
                     else {
-                        for (Future<Void> f : threadsToWaitFor)
-                            f.cancel(true);
+                        submitter.cancelAll();
                         LOG.debug("Cancelled query threads for process " + finalProgress.getProcessId());
                     }
                     intervalEntry.setValue(null); // help GC
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
         
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId()); // important to be sure that all tasks in the group are executed before the queue purges it
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)    // wait for all threads before moving to next phase
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();    // wait for all threads before moving to next phase
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
 
         if (progress.isAborted())
             return null;
@@ -362,7 +378,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -508,16 +524,15 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
 
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId()); // important to be sure that all tasks in the group are executed before the queue purges it
-        else
-            executor.shutdown();
-        
-        for (Future<Void> ttwf : threadsToWaitFor)    // wait for all threads before moving to next phase
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();    // wait for all threads before moving to next phase
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
         
         if (progress.isAborted())
             return null;
@@ -569,7 +584,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -603,22 +618,21 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
 
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId()); // important to be sure that all tasks in the group are executed before the queue purges it
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)    // wait for all threads before moving to next phase
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();    // wait for all threads before moving to next phase
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
 
         if (progress.isAborted())
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.info("selectionTajimaD treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.info("selectionTajimaD treated " + submitter.getSubmittedCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
 
         progress.markAsComplete();
 
@@ -663,7 +677,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         AtomicInteger totalVariantsProcessed = new AtomicInteger(0);
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
@@ -705,22 +719,21 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
 
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId()); // important to be sure that all tasks in the group are executed before the queue purges it
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)    // wait for all threads before moving to next phase
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();    // wait for all threads before moving to next phase
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
 
         if (progress.isAborted())
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionMaf treated " + totalVariantsProcessed.get() + " variants on " + threadsToWaitFor.size() + " intervals for sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionMaf treated " + totalVariantsProcessed.get() + " variants on " + submitter.getSubmittedCount() + " intervals for sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return result;
@@ -1238,7 +1251,7 @@ public class VisualizationService {
         
         List<BasicDBObject> baseQuery = buildMissingDataQuery(gdr, useTempColl, workWithSamples);
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -1269,22 +1282,21 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
 
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId());
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
 
         if (progress.isAborted())
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.info("selectionMissingData treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.info("selectionMissingData treated " + submitter.getSubmittedCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return new TreeMap<>(result);
@@ -1349,11 +1361,20 @@ public class VisualizationService {
         
         // -------------------- $project: count non-missing individuals --------------------
         boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());	// when true we are sure there is only data for the involved bio-entities
-        String gtFieldPathToCheck = "$$s" + (fGotMultiCallSetIndividuals ? ".v.gt" : "");
+        // Every selected individual/sample must be counted against the full population regardless
+        // of whether buildGenotypeDataQuery's reconstructed "sp" actually carries an entry for them
+        // (a callset whose run never touched this variant, or whose multiple callsets disagreed and
+        // got weeded out, is otherwise silently absent from $objectToArray("$sp") - which excludes
+        // it from both numerator AND denominator instead of correctly counting it as missing).
+        // getFullPathToGenotypes builds one literal dotted-path per selected individual regardless of
+        // callset count ("$sp.<callsetId or individualId>.gt"), which evaluates to null for an absent
+        // key just as it does for an explicit null value - the same dense/pooled semantics the
+        // single-callset case already relied on.
+        String gtFieldPathToCheck = "$$s";
         DBObject cond = new BasicDBObject("$and", Arrays.asList(new BasicDBObject("$ne", Arrays.asList(new BasicDBObject("$type", gtFieldPathToCheck), "missing")), new BasicDBObject("$ne", Arrays.asList(gtFieldPathToCheck, null))));
         DBObject filter =
             new BasicDBObject("$filter",
-                new BasicDBObject("input", fGotMultiCallSetIndividuals ? new BasicDBObject("$objectToArray", "$sp") : getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals))
+                new BasicDBObject("input", getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals))
                     .append("as", "s")
                     .append("cond", cond)
             );
@@ -1533,7 +1554,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildHeterozygosityQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -1583,22 +1604,21 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(progress.getProcessId(), t)));
+            submitter.submit(t);
         }
 
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(progress.getProcessId());
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
+        }
 
         if (progress.isAborted())
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.info("selectionHeterozygosity treated " + threadsToWaitFor.size() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.info("selectionHeterozygosity treated " + submitter.getSubmittedCount() + " intervals on sequence " + gdr.getDisplayedSequence() + " between " + gdr.getDisplayedRangeMin() + " and " + gdr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
 
         progress.markAsComplete();
 
@@ -1611,7 +1631,11 @@ public class VisualizationService {
         while (indIt.hasNext()) {
             String individualOrSample = indIt.next(), materialRefToUse = null;
             List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
-           	materialRefToUse = callSets.size() == 1 ? "" + callSets.get(0).getId() : individualOrSample;
+            // An individual/sample selected by the caller may have no callset at all for the
+            // project(s)/run(s) currently in scope (e.g. a stale cross-project selection) - fall
+            // back to its own id, same as the multi-callset case, so the resulting path simply
+            // resolves to nothing in "sp" instead of throwing, correctly reading back as missing.
+           	materialRefToUse = callSets != null && callSets.size() == 1 ? "" + callSets.get(0).getId() : individualOrSample;
             String pathToGT = materialRefToUse + "." + TJD_S18_GENOTYPE;
             String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
             result.add(fullPathToGT);
@@ -1653,7 +1677,6 @@ public class VisualizationService {
             if (!findDefaultRangeMinMax(gvfpr, nTempVarCount > 0 ? usedVarCollName : null))
                 return result;
 
-        final ArrayList<Future<Void>> threadsToWaitFor = new ArrayList<>();
         final ProgressIndicator finalProgress = progress;
 
         HashSet<String> selectedMaterial = new HashSet<String>();
@@ -1669,6 +1692,7 @@ public class VisualizationService {
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, taskGroup);
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(nTempVarCount > 0 ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, precheckCollection);
@@ -1724,22 +1748,21 @@ public class VisualizationService {
                 }
             };
 
-            threadsToWaitFor.add((Future<Void>) executor.submit(new TaskWrapper(taskGroup, t)));
+            submitter.submit(t);
         }
         
-        if (executor instanceof GroupedExecutor)
-            ((GroupedExecutor) executor).shutdown(taskGroup);   // important to be sure that all tasks in the group are executed before the queue purges it
-        else
-            executor.shutdown();
-
-        for (Future<Void> ttwf : threadsToWaitFor)    // wait for all threads before moving to next phase
-            ttwf.get();
+        try {
+            submitter.awaitCompletion();    // wait for all threads before moving to next phase
+        }
+        finally {
+            MongoTemplateManager.releaseExecutor(executor, taskGroup);
+        }
 
         if (progress.isAborted())
             return null;
 
         progress.setCurrentStepProgress(100);
-        LOG.debug("selectionVcfFieldPlotData treated " + threadsToWaitFor.size() + " intervals on sequence " + gvfpr.getDisplayedSequence() + " between " + gvfpr.getDisplayedRangeMin() + " and " + gvfpr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
+        LOG.debug("selectionVcfFieldPlotData treated " + submitter.getSubmittedCount() + " intervals on sequence " + gvfpr.getDisplayedSequence() + " between " + gvfpr.getDisplayedRangeMin() + " and " + gvfpr.getDisplayedRangeMax() + " bp in " + (System.currentTimeMillis() - before)/1000f + "s");
         progress.markAsComplete();
 
         return new TreeMap<Long, Integer>(result);
