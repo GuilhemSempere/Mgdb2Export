@@ -80,6 +80,7 @@ import fr.cirad.tools.mgdb.VariantQueryBuilder;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import fr.cirad.tools.query.AdaptiveTaskSubmitter;
+import fr.cirad.tools.query.GroupedExecutor;
 import fr.cirad.tools.security.base.AbstractTokenManager;
 
 /**
@@ -91,6 +92,24 @@ import fr.cirad.tools.security.base.AbstractTokenManager;
 @Component
 public class VisualizationService {
     protected static final Logger LOG = Logger.getLogger(VisualizationService.class);
+
+    /**
+     * Number of concurrent chunk queries a chart starts from, and never goes below, when tuned (see createChartSubmitter()). Going lower
+     * would mostly happen while other operations load the server, so that a chart would end up with too few queries in flight to get
+     * its share of the server. It is kept low because charts on databases with many samples saturate the server early (each chunk
+     * query then being costly), and starting above that point would bias the reference latency.
+     */
+    static final int MIN_CHART_CONCURRENCY = 10;
+
+    /**
+     * Creates the submitter through which a chart hands its interval queries to an executor obtained from MongoTemplateManager.getExecutor().
+     * When maxQueryThreads_&lt;host&gt; is configured, all of them are queued at once, the shared pool's size bounding how many run at a time
+     * and its threads being shared fairly between concurrent operations, as for searches (tuning that number proved slower there).
+     * Otherwise, it is tuned from measured latency, starting from (and never going below) MIN_CHART_CONCURRENCY.
+     */
+    private static AdaptiveTaskSubmitter createChartSubmitter(ExecutorService executor, String taskGroup) {
+        return executor instanceof GroupedExecutor ? AdaptiveTaskSubmitter.withoutLimit((GroupedExecutor) executor, taskGroup) : new AdaptiveTaskSubmitter(executor, taskGroup, MIN_CHART_CONCURRENCY, MIN_CHART_CONCURRENCY);
+    }
 
     final private int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
 	private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;
@@ -163,7 +182,7 @@ public class VisualizationService {
         final ProgressIndicator finalProgress = progress;
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, null);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
@@ -359,7 +378,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -565,7 +584,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -658,7 +677,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
         
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         AtomicInteger totalVariantsProcessed = new AtomicInteger(0);
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
@@ -1232,7 +1251,7 @@ public class VisualizationService {
         
         List<BasicDBObject> baseQuery = buildMissingDataQuery(gdr, useTempColl, workWithSamples);
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -1535,7 +1554,7 @@ public class VisualizationService {
         List<BasicDBObject> baseQuery = buildHeterozygosityQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, progress.getProcessId());
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
@@ -1673,7 +1692,7 @@ public class VisualizationService {
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
-        final AdaptiveTaskSubmitter submitter = new AdaptiveTaskSubmitter(executor, taskGroup);
+        final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, taskGroup);
 
         MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(nTempVarCount > 0 ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
         HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, precheckCollection);
