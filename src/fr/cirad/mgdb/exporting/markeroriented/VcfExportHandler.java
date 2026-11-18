@@ -30,6 +30,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -66,7 +68,10 @@ import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 import htsjdk.samtools.SAMSequenceDictionary;
 import htsjdk.samtools.SAMSequenceRecord;
+import htsjdk.variant.variantcontext.Genotype;
+import htsjdk.variant.variantcontext.GenotypeBuilder;
 import htsjdk.variant.variantcontext.VariantContext;
+import htsjdk.variant.variantcontext.VariantContextBuilder;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
 import htsjdk.variant.vcf.VCFContigHeaderLine;
 import htsjdk.variant.vcf.VCFFormatHeaderLine;
@@ -270,12 +275,43 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		header.setWriteEngineHeaders(mergedHeader.getWriteEngineHeaders());
 		writer.writeHeader(header);
 
-		HashMap<Integer, Object /*phID*/> phasingIDsByCallSet = new HashMap<>();
+		/*
+		 * Phasing: a genotype is written phased if its phase-block ID equals the one its callset had last (see AbstractVariantData.toVariantContext),
+		 * which depends on every variant before it, whereas chunks, and sub-ranges within chunks, are built concurrently. So each sub-range is
+		 * built with a phasing state of its own, starting empty, the first phased genotype of each callset in it being left undecided (built
+		 * unphased); then, in output order, each chunk fixes those using the exact state the sub-ranges (and chunks) before it left, and hands
+		 * its own final state over to the next chunk. Only that light step is serialized between chunks.
+		 */
+		ConcurrentHashMap<Integer, CompletableFuture<Map<Integer, Object>>> phasingStateAfterChunk = new ConcurrentHashMap<>();
 		ExportManager.AbstractExportWriter writingThread = new ExportManager.AbstractExportWriter() {
 			public void writeChunkRuns(Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
-				if (markerRunsToWrite.isEmpty())
+				throw new UnsupportedOperationException("the chunk index is required");
+			}
+
+			/** Waits for the phasing state left by chunk {@code chunkIndex} (unless the export ends meanwhile) */
+			private Map<Integer, Object> phasingStateAfter(int chunkIndex) throws IOException {
+				if (chunkIndex < 0)
+					return new HashMap<>();
+				CompletableFuture<Map<Integer, Object>> state = phasingStateAfterChunk.computeIfAbsent(chunkIndex, k -> new CompletableFuture<>());
+				while (true)
+					try {
+						return state.get(1, TimeUnit.SECONDS);
+					}
+					catch (java.util.concurrent.TimeoutException e) {
+						if (progress.isAborted() || progress.getError() != null)
+							throw new IOException("Export ended while waiting for chunk " + chunkIndex);
+					}
+					catch (Exception e) {
+						throw new IOException(e);
+					}
+			}
+
+			@Override
+			public void writeChunkRuns(int chunkIndex, Collection<Collection<VariantRunData>> markerRunsToWrite, List<String> orderedMarkerIDs, OutputStream genotypeOS, OutputStream variantOS, OutputStream annotationOS, OutputStream warningOS) throws IOException {
+				if (markerRunsToWrite.isEmpty()) {
+					phasingStateAfterChunk.computeIfAbsent(chunkIndex, k -> new CompletableFuture<>()).complete(phasingStateAfter(chunkIndex - 1));
 					return;
-				
+				}
 				CustomVCFWriter chunkWriter = new CustomVCFWriter(null, genotypeOS, null, false, false, true);
 				chunkWriter.accountForHeaderWithoutWritingIt(header);
 
@@ -283,6 +319,12 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 			    ArrayList<ArrayList<String>> splitVariantIdColls = Helper.evenlySplitCollection(orderedMarkerIDs, splitVrdColls.size());
 			    
                 VariantContext[][] vcChunks = new VariantContext[splitVrdColls.size()][];
+                List<HashMap<Integer, Object>> subRangeFinalPhasingStates = new ArrayList<>(splitVrdColls.size());
+                List<Map<Integer, Map<Integer, AbstractVariantData.UndecidedPhasing>>> subRangeUndecidedPhasing = new ArrayList<>(splitVrdColls.size());	// by variant index
+                for (int i = 0; i < splitVrdColls.size(); i++) {
+                	subRangeFinalPhasingStates.add(new HashMap<>());
+                	subRangeUndecidedPhasing.add(new HashMap<>());
+                }
 		        ExecutorService executor = Executors.newFixedThreadPool(vcChunks.length);
 		        for (int i=0; i<vcChunks.length; i++) {
 		            final ArrayList<Collection<VariantRunData>> vrdCollChunk = splitVrdColls.get(i);
@@ -290,7 +332,9 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		            final int nChunkIndex = i;
 		            Thread t = new Thread() {
 		                public void run() {
-                            vcChunks[nChunkIndex] = new VariantContext[vrdCollChunk.size()];		                    
+                            vcChunks[nChunkIndex] = new VariantContext[vrdCollChunk.size()];
+                            HashMap<Integer, Object> phasingState = subRangeFinalPhasingStates.get(nChunkIndex);
+                            Map<Integer, Map<Integer, AbstractVariantData.UndecidedPhasing>> undecidedPhasingByVariant = subRangeUndecidedPhasing.get(nChunkIndex);		                    
                             int nVariantIndex = 0;
 		                    for (Collection<VariantRunData> runsToWrite : vrdCollChunk) {
 		                    	String idOfVarToWrite = variantIdCollChunk.get(nVariantIndex);
@@ -300,7 +344,11 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		    					AbstractVariantData variant = runsToWrite == null || runsToWrite.isEmpty() ? mongoTemplate.findById(idOfVarToWrite, VariantData.class) : runsToWrite.iterator().next();
             					try
             					{
-            		                vcChunks[nChunkIndex][nVariantIndex++] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), callSetsToExport, individualPositions, individualsByPop, workWithSamples, annotationFieldThresholds, phasingIDsByCallSet, warningOS, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite));
+            		                HashMap<Integer, AbstractVariantData.UndecidedPhasing> undecidedPhasing = new HashMap<>();
+            		                vcChunks[nChunkIndex][nVariantIndex] = variant.toVariantContext(mongoTemplate, runsToWrite, nAssemblyId, !MgdbDao.idLooksGenerated(idOfVarToWrite), callSetsToExport, individualPositions, individualsByPop, workWithSamples, annotationFieldThresholds, phasingState, warningOS, markerSynonyms == null ? idOfVarToWrite : markerSynonyms.get(idOfVarToWrite), undecidedPhasing);
+            		                if (!undecidedPhasing.isEmpty())
+            		                	undecidedPhasingByVariant.put(nVariantIndex, undecidedPhasing);
+            		                nVariantIndex++;
             					}
             					catch (Exception e)
             					{
@@ -321,9 +369,30 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
                     LOG.error("Error exporting VCF", e);
                 }
 		        
+		        // in output order, with the state left by the chunks before: decide the phasing left undecided, then pass the state on
+		        Map<Integer, Object> phasingState = new HashMap<>(phasingStateAfter(chunkIndex - 1));
+		        for (int i = 0; i < vcChunks.length; i++) {
+		        	for (Map.Entry<Integer, Map<Integer, AbstractVariantData.UndecidedPhasing>> variantEntry : subRangeUndecidedPhasing.get(i).entrySet()) {
+		        		VariantContext vc = vcChunks[i][variantEntry.getKey()];
+		        		if (vc == null)
+		        			continue;	// failed (error already reported)
+		        		Map<String, Genotype> phasedGenotypesBySample = new HashMap<>();
+		        		for (Map.Entry<Integer, AbstractVariantData.UndecidedPhasing> callsetEntry : variantEntry.getValue().entrySet())
+		        			if (callsetEntry.getValue().phaseId().equals(phasingState.get(callsetEntry.getKey()))) {
+		        				AbstractVariantData.UndecidedPhasing undecided = callsetEntry.getValue();
+		        				phasedGenotypesBySample.put(undecided.sample(), new GenotypeBuilder(vc.getGenotype(undecided.sample())).alleles(undecided.phasedAlleles()).phased(true).make());
+		        			}
+		        		if (!phasedGenotypesBySample.isEmpty())
+		        			vcChunks[i][variantEntry.getKey()] = new VariantContextBuilder(vc).genotypes(vc.getGenotypes().stream().map(g -> phasedGenotypesBySample.getOrDefault(g.getSampleName(), g)).toList()).make();
+		        	}
+		        	phasingState.putAll(subRangeFinalPhasingStates.get(i));
+		        }
+		        phasingStateAfterChunk.computeIfAbsent(chunkIndex, k -> new CompletableFuture<>()).complete(phasingState);
+
 		        for (VariantContext[] vcChunk : vcChunks)
 		            for (VariantContext vc : vcChunk)
-		            	chunkWriter.add(vc);
+		            	if (vc != null)
+		            		chunkWriter.add(vc);
 		        chunkWriter.close();
 			}
 		};
