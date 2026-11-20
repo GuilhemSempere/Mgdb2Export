@@ -73,6 +73,7 @@ import htsjdk.variant.variantcontext.GenotypeBuilder;
 import htsjdk.variant.variantcontext.VariantContext;
 import htsjdk.variant.variantcontext.VariantContextBuilder;
 import htsjdk.variant.variantcontext.writer.CustomVCFWriter;
+import htsjdk.variant.vcf.VCFConstants;
 import htsjdk.variant.vcf.VCFContigHeaderLine;
 import htsjdk.variant.vcf.VCFFormatHeaderLine;
 import htsjdk.variant.vcf.VCFHeader;
@@ -240,6 +241,8 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		Set<VCFHeaderLine> headerLines = mergedHeader.getHeaderLines();
 		if (headerLines.size() == 0)
 			headerLines.add(new VCFFormatHeaderLine("GT", 1, VCFHeaderLineType.String, "Genotype"));	// minimum required
+		if (headerLines.stream().noneMatch(line -> line instanceof VCFFormatHeaderLine && VCFConstants.PHASE_SET_KEY.equals(((VCFFormatHeaderLine) line).getID())))
+			headerLines.add(new VCFFormatHeaderLine(VCFConstants.PHASE_SET_KEY, 1, VCFHeaderLineType.Integer, "Phase set"));	// written for phased genotypes, see AbstractVariantData.PhaseSetState
 		
 		// Add sequence header lines (not stored in our vcf header collection)
 		int nSequenceIndex = 0;
@@ -372,18 +375,39 @@ public class VcfExportHandler extends AbstractMarkerOrientedExportHandler {
 		        // in output order, with the state left by the chunks before: decide the phasing left undecided, then pass the state on
 		        Map<Integer, Object> phasingState = new HashMap<>(phasingStateAfter(chunkIndex - 1));
 		        for (int i = 0; i < vcChunks.length; i++) {
-		        	for (Map.Entry<Integer, Map<Integer, AbstractVariantData.UndecidedPhasing>> variantEntry : subRangeUndecidedPhasing.get(i).entrySet()) {
-		        		VariantContext vc = vcChunks[i][variantEntry.getKey()];
-		        		if (vc == null)
-		        			continue;	// failed (error already reported)
-		        		Map<String, Genotype> phasedGenotypesBySample = new HashMap<>();
-		        		for (Map.Entry<Integer, AbstractVariantData.UndecidedPhasing> callsetEntry : variantEntry.getValue().entrySet())
-		        			if (callsetEntry.getValue().phaseId().equals(phasingState.get(callsetEntry.getKey()))) {
-		        				AbstractVariantData.UndecidedPhasing undecided = callsetEntry.getValue();
-		        				phasedGenotypesBySample.put(undecided.sample(), new GenotypeBuilder(vc.getGenotype(undecided.sample())).alleles(undecided.phasedAlleles()).phased(true).make());
+		        	// columns whose first phased genotype in this sub-range continues the block the column was in: by sample, [provisional PS, actual PS]
+		        	Map<String, int[]> phaseSetFixes = new HashMap<>();
+		        	Map<Integer, Integer> fixedColumns = new HashMap<>();	// column -> actual PS, for those
+		        	for (Map<Integer, AbstractVariantData.UndecidedPhasing> undecidedByColumn : subRangeUndecidedPhasing.get(i).values())
+		        		for (Map.Entry<Integer, AbstractVariantData.UndecidedPhasing> columnEntry : undecidedByColumn.entrySet()) {
+		        			AbstractVariantData.PhaseSetState stateBefore = (AbstractVariantData.PhaseSetState) phasingState.get(columnEntry.getKey());
+		        			AbstractVariantData.UndecidedPhasing undecided = columnEntry.getValue();
+		        			if (stateBefore != null && stateBefore.block().equals(undecided.block())) {
+		        				phaseSetFixes.put(undecided.sample(), new int[] {undecided.provisionalPhaseSet(), stateBefore.phaseSet()});
+		        				fixedColumns.put(columnEntry.getKey(), stateBefore.phaseSet());
 		        			}
-		        		if (!phasedGenotypesBySample.isEmpty())
-		        			vcChunks[i][variantEntry.getKey()] = new VariantContextBuilder(vc).genotypes(vc.getGenotypes().stream().map(g -> phasedGenotypesBySample.getOrDefault(g.getSampleName(), g)).toList()).make();
+		        		}
+		        	if (!phaseSetFixes.isEmpty()) {	// the provisional PS is shared by the column's next genotypes of the same block: fix them all
+		        		for (int v = 0; v < vcChunks[i].length; v++) {
+		        			VariantContext vc = vcChunks[i][v];
+		        			if (vc == null)
+		        				continue;	// failed (error already reported)
+		        			Map<String, Genotype> fixedGenotypesBySample = new HashMap<>();
+		        			for (Map.Entry<String, int[]> fix : phaseSetFixes.entrySet()) {
+		        				Genotype g = vc.getGenotype(fix.getKey());
+		        				if (g != null && g.isPhased() && Integer.valueOf(fix.getValue()[0]).equals(g.getAnyAttribute(VCFConstants.PHASE_SET_KEY)))
+		        					fixedGenotypesBySample.put(fix.getKey(), new GenotypeBuilder(g).attribute(VCFConstants.PHASE_SET_KEY, fix.getValue()[1]).make());
+		        			}
+		        			if (!fixedGenotypesBySample.isEmpty())
+		        				vcChunks[i][v] = new VariantContextBuilder(vc).genotypes(vc.getGenotypes().stream().map(g -> fixedGenotypesBySample.getOrDefault(g.getSampleName(), g)).toList()).make();
+		        		}
+		        		for (Map.Entry<Integer, Object> columnState : subRangeFinalPhasingStates.get(i).entrySet()) {	// a column still in that block at the end of the sub-range hands the actual PS over
+		        			Integer actualPhaseSet = fixedColumns.get(columnState.getKey());
+		        			AbstractVariantData.PhaseSetState state = (AbstractVariantData.PhaseSetState) columnState.getValue();
+		        			AbstractVariantData.UndecidedPhasing undecided = subRangeUndecidedPhasing.get(i).values().stream().map(m -> m.get(columnState.getKey())).filter(u -> u != null).findFirst().orElse(null);
+		        			if (actualPhaseSet != null && undecided != null && state.block().equals(undecided.block()) && state.phaseSet() == undecided.provisionalPhaseSet())
+		        				columnState.setValue(new AbstractVariantData.PhaseSetState(state.block(), actualPhaseSet));
+		        		}
 		        	}
 		        	phasingState.putAll(subRangeFinalPhasingStates.get(i));
 		        }
