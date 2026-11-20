@@ -111,130 +111,7 @@ public class VisualizationService {
         return executor instanceof GroupedExecutor ? AdaptiveTaskSubmitter.withoutLimit((GroupedExecutor) executor, taskGroup) : new AdaptiveTaskSubmitter(executor, taskGroup, MIN_CHART_CONCURRENCY, MIN_CHART_CONCURRENCY);
     }
 
-    private BasicDBObject buildPositionHintIfFilteringOnSequence(Object query) {
-        if (!Helper.isFilteringOnSequence(query))
-            return null;
-
-        // Keep hint keys aligned with the thread-bound path (default ref pos or assembly-specific positions.
-        String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
-        return new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, 1)
-                .append(refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE, 1);
-    }
-
-    private long countDocumentsWithPositionPlan(MongoCollection<Document> collection, BasicDBObject query) {
-        com.mongodb.client.model.Collation collation = Helper.getPositionCollationIfFilteringOnSequence(query);
-        BasicDBObject hint = buildPositionHintIfFilteringOnSequence(query);
-        try {
-            return hint == null
-                    ? collection.countDocuments(query, new CountOptions().collation(collation))
-                    : collection.countDocuments(query, new CountOptions().collation(collation).hint(hint));
-        }
-        catch (MongoCommandException mce) {
-            if (hint == null)
-                throw mce;
-            LOG.debug("Falling back to unhinted countDocuments after hint failure: " + mce.getErrorMessage());
-            return collection.countDocuments(query, new CountOptions().collation(collation));
-        }
-    }
-
-    private boolean existsWithPositionPlan(MongoCollection<Document> collection, BasicDBObject query) {
-        com.mongodb.client.model.Collation collation = Helper.getPositionCollationIfFilteringOnSequence(query);
-        BasicDBObject hint = buildPositionHintIfFilteringOnSequence(query);
-        try {
-            var find = collection.find(query).projection(Projections.include("_id")).limit(1);
-            if (collation != null)
-                find = find.collation(collation);
-            if (hint != null)
-                find = find.hint(hint);
-            return find.iterator().hasNext();
-        }
-        catch (MongoCommandException mce) {
-            if (hint == null)
-                throw mce;
-            LOG.debug("Falling back to unhinted find precheck after hint failure: " + mce.getErrorMessage());
-            var fallback = collection.find(query).projection(Projections.include("_id")).limit(1);
-            if (collation != null)
-                fallback = fallback.collation(collation);
-            return fallback.iterator().hasNext();
-        }
-    }
-
-    private List<String> findIdsWithPositionPlan(MongoCollection<Document> collection, BasicDBObject query) {
-        com.mongodb.client.model.Collation collation = Helper.getPositionCollationIfFilteringOnSequence(query);
-        BasicDBObject hint = buildPositionHintIfFilteringOnSequence(query);
-        try {
-            var find = collection.find(query).projection(new BasicDBObject("_id", 1));
-            if (collation != null)
-                find = find.collation(collation);
-            if (hint != null)
-                find = find.hint(hint);
-            return find.map(doc -> doc.getString("_id")).into(new ArrayList<>());
-        }
-        catch (MongoCommandException mce) {
-            if (hint == null)
-                throw mce;
-            LOG.debug("Falling back to unhinted ID fetch after hint failure: " + mce.getErrorMessage());
-            var fallback = collection.find(query).projection(new BasicDBObject("_id", 1));
-            if (collation != null)
-                fallback = fallback.collation(collation);
-            return fallback.map(doc -> doc.getString("_id")).into(new ArrayList<>());
-        }
-    }
-
-    private Iterator<Document> aggregateIteratorWithPositionPlan(MongoCollection<Document> collection, List<BasicDBObject> pipeline, BasicDBObject intervalQuery, boolean allowDiskUse) {
-        com.mongodb.client.model.Collation collation = Helper.getPositionCollationIfFilteringOnSequence(intervalQuery);
-        BasicDBObject hint = buildPositionHintIfFilteringOnSequence(intervalQuery);
-        try {
-            AggregateIterable<Document> aggregate = collection.aggregate(pipeline);
-            if (allowDiskUse)
-                aggregate = aggregate.allowDiskUse(true);
-            if (collation != null)
-                aggregate = aggregate.collation(collation);
-            if (hint != null)
-                aggregate = aggregate.hint(hint);
-            return aggregate.iterator();
-        }
-        catch (MongoCommandException mce) {
-            if (hint == null)
-                throw mce;
-            LOG.debug("Falling back to unhinted aggregation cursor after hint failure: " + mce.getErrorMessage());
-            AggregateIterable<Document> fallback = collection.aggregate(pipeline);
-            if (allowDiskUse)
-                fallback = fallback.allowDiskUse(true);
-            if (collation != null)
-                fallback = fallback.collation(collation);
-            return fallback.iterator();
-        }
-    }
-
-    private Document aggregateFirstWithPositionPlan(MongoCollection<Document> collection, List<BasicDBObject> pipeline, BasicDBObject intervalQuery, boolean allowDiskUse) {
-        com.mongodb.client.model.Collation collation = Helper.getPositionCollationIfFilteringOnSequence(intervalQuery);
-        BasicDBObject hint = buildPositionHintIfFilteringOnSequence(intervalQuery);
-        try {
-            AggregateIterable<Document> aggregate = collection.aggregate(pipeline);
-            if (allowDiskUse)
-                aggregate = aggregate.allowDiskUse(true);
-            if (collation != null)
-                aggregate = aggregate.collation(collation);
-            if (hint != null)
-                aggregate = aggregate.hint(hint);
-            return aggregate.first();
-        }
-        catch (MongoCommandException mce) {
-            if (hint == null)
-                throw mce;
-            LOG.debug("Falling back to unhinted aggregation first() after hint failure: " + mce.getErrorMessage());
-            AggregateIterable<Document> fallback = collection.aggregate(pipeline);
-            if (allowDiskUse)
-                fallback = fallback.allowDiskUse(true);
-            if (collation != null)
-                fallback = fallback.collation(collation);
-            return fallback.first();
-        }
-    }
-
-    final private int MIN_INTERVAL_SIZE = 10; // minimal interval size in bp
-	private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;
+    private int VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK = 5;
 	
 	/**
 	 * Set to <= 0 to disable prechecking
@@ -315,7 +192,7 @@ public class VisualizationService {
             Thread t = new Thread() {
                 public void run() {
                     if (!finalProgress.isAborted()) {
-                        long partialCount = countDocumentsWithPositionPlan(mongoTemplate.getCollection(nTempVarCount == 0 ? mongoTemplate.getCollectionName(VariantData.class) : tmpVarColl.getNamespace().getCollectionName()), intervalEntry.getValue());
+                        long partialCount = mongoTemplate.getCollection(nTempVarCount == 0 ? mongoTemplate.getCollectionName(VariantData.class) : tmpVarColl.getNamespace().getCollectionName()).countDocuments(intervalEntry.getValue(), new CountOptions().collation(Helper.getPositionCollationIfFilteringOnSequence(intervalEntry.getValue())));
                         nTotalTreatedVariantCount.addAndGet((int) partialCount);
                         result.put(intervalEntry.getKey(), partialCount);
                         finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
@@ -426,7 +303,11 @@ public class VisualizationService {
             // Async precheck
             if (preCheckExecutor != null) {
                 CompletableFuture<Void> future = CompletableFuture.runAsync(() -> {
-                    boolean hasData = existsWithPositionPlan(precheckCollection, query);
+                    boolean hasData = precheckCollection.find(query).collation(Helper.getPositionCollationIfFilteringOnSequence(query))
+                            .projection(Projections.include("_id"))
+                            .limit(1)
+                            .iterator()
+                            .hasNext();
                     synchronized (result) {
                         if (hasData) {
                             if (variantQueryDBListToMerge != null && !variantQueryDBListToMerge.isEmpty())
@@ -516,7 +397,7 @@ public class VisualizationService {
                         return;
 
                     try {
-                        Iterator<Document> it = aggregateIteratorWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), windowQuery, intervalEntry.getValue(), true);
+                        Iterator<Document> it = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).iterator();
     
                         if (finalProgress.isAborted())
                             return;
@@ -721,7 +602,7 @@ public class VisualizationService {
                 public void run() {
                     if (progress.isAborted())
                         return;
-                    Document chunk = aggregateFirstWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), windowQuery, intervalEntry.getValue(), true);  // There's only one interval per query
+                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
                     if (chunk != null) {
                         double value = chunk.getDouble(TJD_RES_TAJIMAD);
                         double sites = (double)chunk.getInteger(TJD_RES_SEGREGATINGSITES);
@@ -815,7 +696,9 @@ public class VisualizationService {
                     if (progress.isAborted())
                         return;
 
-                    Document chunk = aggregateFirstWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), windowQuery, intervalEntry.getValue(), true);  // There's only one interval per query
+                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
+
+                    Document chunk = queryResult.first();  // There's only one interval per query
                     
                     if (chunk == null)
                         result.put(intervalEntry.getKey(), Float.NaN);
@@ -1384,7 +1267,7 @@ public class VisualizationService {
                     if (progress.isAborted())
                         return;
 
-                    Document chunk = aggregateFirstWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), windowQuery, intervalEntry.getValue(), true);  // There's only one interval per query
+                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
                     if (chunk == null)
                     	result.put(intervalEntry.getKey(), Float.NaN);
                     else {              
@@ -1688,7 +1571,7 @@ public class VisualizationService {
                     if (progress.isAborted())
                         return;
 
-                    Iterator<Document> it = aggregateIteratorWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), windowQuery, intervalEntry.getValue(), true);
+                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
 
                     if (progress.isAborted())
                         return;
@@ -1696,6 +1579,7 @@ public class VisualizationService {
                     // Collect all heterozygosity values across all variants and populations in this interval
                     List<Double> allHetValues = new ArrayList<>();
                     
+                    Iterator<Document> it = queryResult.iterator();
                     while (it.hasNext()) {
                         Document variantResult = it.next();
                         List<Document> populations = variantResult.getList(HET_RES_POPULATIONS, Document.class);
@@ -1821,7 +1705,7 @@ public class VisualizationService {
                 public void run() {
                     if (!finalProgress.isAborted())
                     {
-                        List<String> variantsInInterval = findIdsWithPositionPlan(mongoTemplate.getCollection(usedVarCollName), intervalEntry.getValue());	// rather than distinct(), which with this collation would merge IDs that only differ by leading zeros  // oddly, it is faster to run a pre-query than to use $lookup
+                        List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).find(intervalEntry.getValue()).projection(new BasicDBObject("_id", 1)).collation(Helper.getPositionCollationIfFilteringOnSequence(intervalEntry.getValue())).map(doc -> doc.getString("_id")).into(new ArrayList<>());	// rather than distinct(), which with this collation would merge IDs that only differ by leading zeros  // oddly, it is faster to run a pre-query than to use $lookup
                         final ArrayList<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
 
                         BasicDBList matchList = new BasicDBList();
@@ -1949,11 +1833,7 @@ public class VisualizationService {
             if (!variantQueryForTargetCollection.isEmpty())
                 countPipeline.add(new BasicDBObject("$match", variantQueryForTargetCollection));
             countPipeline.add(new BasicDBObject("$count", "count"));
-            AggregateIterable<Document> countAggregate = (fWorkingOnTempColl ? collWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class))).aggregate(countPipeline, Document.class);
-            com.mongodb.client.model.Collation countCollation = Helper.getPositionCollationIfFilteringOnSequence(variantQueryForTargetCollection);
-            if (countCollation != null)
-                countAggregate = countAggregate.collation(countCollation);
-            MongoCursor<Document> countCursor = countAggregate.iterator();
+            MongoCursor<Document> countCursor = (fWorkingOnTempColl ? collWithPojoCodec : mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantData.class))).aggregate(countPipeline, Document.class).collation(IExportHandler.collationObj).iterator();
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             HapMapExportHandler heh = (HapMapExportHandler) AbstractMarkerOrientedExportHandler.getMarkerOrientedExportHandlers().get("HAPMAP");
