@@ -22,14 +22,17 @@ import java.math.RoundingMode;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.TreeMap;
+import java.util.TreeSet;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -39,7 +42,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
-import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.log4j.Logger;
 import org.bson.Document;
@@ -53,8 +55,10 @@ import com.mongodb.BasicDBObject;
 import com.mongodb.DBObject;
 import com.mongodb.MongoCommandException;
 import com.mongodb.client.AggregateIterable;
+import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
+import com.mongodb.client.model.Collation;
 import com.mongodb.client.model.CountOptions;
 import com.mongodb.client.model.Projections;
 
@@ -64,7 +68,6 @@ import fr.cirad.mgdb.exporting.markeroriented.HapMapExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.GenotypingProject;
-import fr.cirad.mgdb.model.mongo.maintypes.GenotypingSample;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantRunData;
 import fr.cirad.mgdb.model.mongo.subtypes.Callset;
@@ -282,7 +285,15 @@ public class VisualizationService {
        
         // if there are really few variants per interval on average we consider it is worth pre-checking for empty intervals
         String refPosPathWithDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
-        ExecutorService preCheckExecutor = VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK <= 0 || precheckCollection == null || (float) precheckCollection.countDocuments(new BasicDBObject(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$gte", rangeMin).append("$lte", rangeMax))) / actualIntervalCount > VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK  ? null : Executors.newFixedThreadPool(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+        BasicDBObject preCheckRangeQuery = new BasicDBObject();	// same criteria as the interval queries below, over the whole range
+        if (sequences != null && !sequences.isEmpty())
+            preCheckRangeQuery.put(refPosPathWithDot + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", sequences));
+        if (variantType != null)
+            preCheckRangeQuery.put(VariantData.FIELDNAME_TYPE, variantType);
+        preCheckRangeQuery.put(refPosPathWithDot + ReferencePosition.FIELDNAME_START_SITE, new BasicDBObject("$gte", rangeMin).append("$lte", rangeMax));
+        Collation precheckRangeCollation = Helper.getPositionCollationIfFilteringOnSequence(preCheckRangeQuery);
+        long precheckRangeCount = precheckCollection == null ? 0 : (precheckRangeCollation == null ? precheckCollection.countDocuments(preCheckRangeQuery) : precheckCollection.countDocuments(preCheckRangeQuery, new CountOptions().collation(precheckRangeCollation)));
+        ExecutorService preCheckExecutor = VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK <= 0 || precheckCollection == null || (float) precheckRangeCount / actualIntervalCount > VARIANTS_PER_INTERVAL_THRESHOLD_FOR_PRECHECK  ? null : Executors.newFixedThreadPool(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
         AtomicInteger keptQueryCount = new AtomicInteger(0);
 
         List<CompletableFuture<Void>> futures = new ArrayList<>();
@@ -337,6 +348,339 @@ public class VisualizationService {
         return result;
     }
 
+    /**
+     * The variants a chart works on, and where it reads their genotypes: those of the temporary collection holding search results when
+     * there is one, otherwise those of the main collection that match the search filters.
+     *
+     * Aggregations always run on variantRunData, without $lookup. On the main collection, each interval's query (sequence, position
+     * range and search filters) is matched directly, with the position collation that lets it use the {sequence, position} index (which
+     * was created with it: without it, the query would scan all variants of the position range, or the whole collection). Variants of a
+     * temporary collection are first read from it (with that collation, for the same reason), then matched by ID without any collation:
+     * an aggregation's collation applies to all its stages, and would prevent this match (or a $lookup on IDs) from using the variant ID
+     * index, which has the simple collation.
+     */
+    private static final class ChartVariantSource {
+        private final MongoCollection<Document> runDataColl;
+        private final MongoCollection<Document> tempColl;	// null when working on the main collection
+        private final BasicDBList variantQueryDBList;		// search filters, only applied to the main collection (a temporary one holds their results)
+        private TreeMap<Long, List<Object>> tempVariantIdsByInterval;	// IDs of the temporary collection's variants, by interval start (see getChartIntervalQueries())
+
+        private ChartVariantSource(MongoCollection<Document> runDataColl, MongoCollection<Document> tempColl, BasicDBList variantQueryDBList) {
+            this.runDataColl = runDataColl;
+            this.tempColl = tempColl;
+            this.variantQueryDBList = variantQueryDBList;
+        }
+
+        /** @return the temporary collection's name, or null when working on the main collection */
+        String temporaryCollectionName() {
+            return tempColl == null ? null : tempColl.getNamespace().getCollectionName();
+        }
+
+        /** @return the IDs of the temporary collection's variants that fall in the interval starting at intervalStart, or null when working on the main collection */
+        List<Object> temporaryVariantIds(Long intervalStart) {
+            return tempColl == null ? null : tempVariantIdsByInterval.getOrDefault(intervalStart, Collections.emptyList());
+        }
+
+        /**
+         * Runs stages on the run data of an interval's variants.
+         *
+         * @param intervalQuery the interval's query (see getIntervalQueries())
+         * @param tempVariantIds the interval's variant IDs as returned by temporaryVariantIds()
+         * @param scope the projects and runs involved, whose run data alone is matched
+         * @param fBiallelicOnly whether to leave out variants with more than 2 known alleles
+         * @param stages the stages to run on the matched variantRunData documents
+         */
+        AggregateIterable<Document> aggregate(BasicDBObject intervalQuery, List<Object> tempVariantIds, ChartRunScope scope, boolean fBiallelicOnly, List<BasicDBObject> stages) {
+            BasicDBObject match = tempVariantIds == null ? new BasicDBObject(intervalQuery) : new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_VARIANT_ID, new BasicDBObject("$in", tempVariantIds));
+            if (scope.runFilter != null)
+                match = new BasicDBObject("$and", Arrays.asList(match, scope.runFilter));
+            if (fBiallelicOnly)
+                match.append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false));
+
+            List<BasicDBObject> pipeline = new ArrayList<>(stages.size() + 1);
+            pipeline.add(new BasicDBObject("$match", match));
+            pipeline.addAll(stages);
+            AggregateIterable<Document> result = runDataColl.aggregate(pipeline).allowDiskUse(true);
+            Collation collation = tempVariantIds == null ? Helper.getPositionCollationIfFilteringOnSequence(intervalQuery) : null;
+            return collation == null ? result : result.collation(collation);
+        }
+    }
+
+    /**
+     * Opens a chart's variant source, or returns null (after setting the progress error) if the request filters on genotypes or annotations
+     * while no search results are available.
+     */
+    private static ChartVariantSource openChartVariantSource(MgdbChartRequest gdr, String module, MongoTemplate mongoTemplate, ProgressIndicator progress) throws Exception {
+        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
+        Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
+
+        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(module, AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
+        boolean fGotTempVariants = tmpVarColl.find().projection(Projections.include("_id")).limit(1).first() != null;
+        if (!fGotTempVariants && VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0) {
+            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+            return null;
+        }
+
+        return new ChartVariantSource(mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantRunData.class)), fGotTempVariants ? tmpVarColl : null,
+                !fGotTempVariants && variantRunDataQueries.size() == 1 ? variantRunDataQueries.iterator().next() : null);
+    }
+
+    /**
+     * Sets the request's displayed range to its default one if not specified.
+     *
+     * @return false (after setting the progress error) if no default range could be found
+     */
+    private boolean ensureChartRange(MgdbChartRequest gdr, ChartVariantSource source, ProgressIndicator progress, String sMethodName) throws Exception {
+        if ((gdr.getDisplayedRangeMin() != null && gdr.getDisplayedRangeMax() != null) || findDefaultRangeMinMax(gdr, source.temporaryCollectionName()))
+            return true;
+
+        progress.setError(sMethodName + ": Unable to find default position range, either there are no results in the current selection for this sequence, or results are not in sync with interface filters (in which case, try re-applying filters).");
+        return false;
+    }
+
+    /**
+     * @return the chart's interval queries, keyed by interval start (see getIntervalQueries()), with null values for intervals known to hold
+     * no variant. When working on a temporary collection, its variants are read at once, in a single pass over the displayed range, and
+     * dispatched to the intervals by position (see ChartVariantSource.temporaryVariantIds()): resolving them interval by interval would double
+     * the number of queries (and thus of round trips to the server, which dominate with thousands of small intervals on a remote server),
+     * and that pass also tells which intervals are empty, without any precheck.
+     */
+    private HashMap<Long, BasicDBObject> getChartIntervalQueries(MgdbChartRequest gdr, ChartVariantSource source, MongoTemplate mongoTemplate) throws InterruptedException, ExecutionException {
+        if (source.tempColl == null)
+            return getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), source.variantQueryDBList, mongoTemplate.getCollection(MongoTemplateManager.getMongoCollectionName(VariantData.class)));
+
+        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), null, null);
+        TreeMap<Long, List<Object>> idsByInterval = new TreeMap<>();
+        for (Long intervalStart : intervalQueries.keySet())
+            idsByInterval.put(intervalStart, new ArrayList<>());
+
+        String refPosPath = Assembly.getThreadBoundVariantRefPosPath(), startSitePath = refPosPath + "." + ReferencePosition.FIELDNAME_START_SITE;
+        BasicDBObject rangeQuery = new BasicDBObject(refPosPath + "." + ReferencePosition.FIELDNAME_SEQUENCE, new BasicDBObject("$in", Arrays.asList(gdr.getDisplayedSequence())));
+        if (gdr.getDisplayedVariantType() != null)
+            rangeQuery.put(VariantData.FIELDNAME_TYPE, gdr.getDisplayedVariantType());
+        rangeQuery.put(startSitePath, new BasicDBObject("$gte", gdr.getDisplayedRangeMin()).append("$lte", gdr.getDisplayedRangeMax()));
+        FindIterable<Document> find = source.tempColl.find(rangeQuery).projection(Projections.include("_id", startSitePath));
+        Collation collation = Helper.getPositionCollationIfFilteringOnSequence(rangeQuery);
+        if (collation != null)
+            find = find.collation(collation);
+        for (Document variant : find) {
+            Object position = variant;
+            for (String pathPart : startSitePath.split("\\."))
+                position = position instanceof Document ? ((Document) position).get(pathPart) : null;
+            Long intervalStart = position instanceof Number ? idsByInterval.floorKey(((Number) position).longValue()) : null;	// intervals are contiguous: each one ends where the next one starts
+            if (intervalStart != null)
+                idsByInterval.get(intervalStart).add(variant.get("_id"));
+        }
+
+        for (Map.Entry<Long, List<Object>> intervalIds : idsByInterval.entrySet())
+            if (intervalIds.getValue().isEmpty())
+                intervalQueries.put(intervalIds.getKey(), null);
+        source.tempVariantIdsByInterval = idsByInterval;
+        return intervalQueries;
+    }
+
+    /** The individuals (or samples) a chart involves, by group, and their callsets in the involved projects */
+    private static final class ChartMaterial {
+        private final List<Collection<String>> groups = new ArrayList<>();
+        private final List<Boolean> explicitlySelected = new ArrayList<>();	// false for a group with none selected, which then stands for all of the projects' ones
+        private final TreeMap<String, List<Callset>> callsetsByEntity = new TreeMap<>();
+        private int entityCount;	// number of distinct individuals (or samples), including any that has no callset in the projects
+
+        /** @return a single group holding every involved individual (or sample) that has callsets in the projects */
+        List<Collection<String>> pooled() {
+            return Collections.singletonList(callsetsByEntity.keySet());
+        }
+
+        /**
+         * @return the groups made disjoint, as required for per-group statistics: an individual (or sample) involved in several groups goes
+         * to the last one that selected it explicitly, or if none did, to the last one involving it
+         */
+        List<Collection<String>> disjoint() {
+            Map<String, Integer> groupByEntity = new HashMap<>();
+            for (boolean fExplicitPass : new boolean[] {false, true})
+                for (int i = 0; i < groups.size(); i++)
+                    if (explicitlySelected.get(i) == fExplicitPass)
+                        for (String entity : groups.get(i))
+                            groupByEntity.put(entity, i);
+
+            List<Collection<String>> result = new ArrayList<>();
+            for (int i = 0; i < groups.size(); i++)
+                result.add(new ArrayList<>());
+            for (Map.Entry<String, Integer> entry : groupByEntity.entrySet())
+                result.get(entry.getValue()).add(entry.getKey());
+            return result;
+        }
+    }
+
+    private static ChartMaterial getChartMaterial(MgdbChartRequest gdr, boolean workWithSamples) throws Exception {
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
+        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(Integer::parseInt).toList();
+
+        ChartMaterial material = new ChartMaterial();
+        Collection<String> projectMaterial = null;	// fetched once, if needed
+        HashSet<String> allEntities = new HashSet<>();
+        for (List<String> groupCallSetIds : gdr.getAllCallSetIds()) {
+            Collection<String> group;
+            if (!groupCallSetIds.isEmpty())
+                group = groupCallSetIds.stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toCollection(LinkedHashSet::new));
+            else {
+                if (projectMaterial == null)
+                    projectMaterial = workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs);
+                group = projectMaterial;
+            }
+            material.groups.add(group);
+            material.explicitlySelected.add(!groupCallSetIds.isEmpty());
+            allEntities.addAll(group);
+        }
+        material.entityCount = allEntities.size();
+        material.callsetsByEntity.putAll(workWithSamples ? MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, allEntities) : MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, allEntities));
+        return material;
+    }
+
+    /** The projects and runs whose data a chart reads, i.e. those of the involved callsets */
+    private static final class ChartRunScope {
+        private BasicDBObject runFilter;	// restricts variantRunData documents to those runs, null if no callset is involved
+        private boolean fMultipleRuns;		// whether a variant's genotypes may be spread over several documents
+        private Set<Integer> allRunCallsetIds = new HashSet<>();	// every callset of these runs (whether involved or not)
+    }
+
+    private static ChartRunScope getChartRunScope(String module, MongoTemplate mongoTemplate, Map<String, List<Callset>> callsetsByEntity) throws Exception {
+        ChartRunScope scope = new ChartRunScope();
+        Map<Integer, Set<String>> involvedProjectRuns = callsetsByEntity.values().stream().flatMap(List::stream).collect(Collectors.groupingBy(Callset::getProjectId, Collectors.mapping(Callset::getRun, Collectors.toSet())));
+        if (involvedProjectRuns.isEmpty())
+            return scope;
+
+        List<BasicDBObject> projectFilterList = new ArrayList<>();
+        for (Map.Entry<Integer, Set<String>> projectRuns : involvedProjectRuns.entrySet()) {
+            BasicDBObject projectFilter = new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, projectRuns.getKey());
+            // if not all of this project's runs are involved, only match the required ones
+            boolean fNotAllRunsNeeded = projectRuns.getValue().size() != mongoTemplate.findDistinct(new Query(Criteria.where("_id").is(projectRuns.getKey())), GenotypingProject.FIELDNAME_RUNS, GenotypingProject.class, String.class).size();
+            projectFilterList.add(fNotAllRunsNeeded ? new BasicDBObject("$and", Arrays.asList(projectFilter, new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_RUNNAME, new BasicDBObject("$in", projectRuns.getValue())))) : projectFilter);
+        }
+        scope.runFilter = projectFilterList.size() == 1 ? projectFilterList.get(0) : new BasicDBObject("$or", projectFilterList);
+        scope.fMultipleRuns = involvedProjectRuns.values().stream().mapToInt(Set::size).sum() > 1;
+
+        for (Callset cs : MgdbDao.getCallsetsForProjectAndSamples(module, involvedProjectRuns.keySet(), null))
+            if (involvedProjectRuns.containsKey(cs.getProjectId()) && involvedProjectRuns.get(cs.getProjectId()).contains(cs.getRun()))
+                scope.allRunCallsetIds.add(cs.getId());
+        return scope;
+    }
+
+    /** Field holding, for each group, the genotypes (strings) of its individuals (or samples) that have one (see buildGroupGenotypeStages()) */
+    private static final String GROUP_GENOTYPES = "gts";
+
+    /**
+     * @param callsetIds IDs of callsets
+     * @param fieldPath path of the wanted field within a callset's entry in sp (e.g. "gt")
+     * @param scope the involved runs
+     * @return an expression resolving to the value of that field for each of these callsets: when they are all the callsets of the involved
+     * runs, it reads the whole sp object at once ($objectToArray), rather than looking up each callset's entry by name, which costs a scan of
+     * its keys every time (i.e. grows with the square of the number of callsets)
+     */
+    private static Object callsetValuesExpr(Collection<Integer> callsetIds, String fieldPath, ChartRunScope scope) {
+        if (!callsetIds.isEmpty() && callsetIds.size() == scope.allRunCallsetIds.size() && scope.allRunCallsetIds.containsAll(callsetIds))
+            return new BasicDBObject("$map", new BasicDBObject("input", new BasicDBObject("$objectToArray", new BasicDBObject("$ifNull", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject()))))
+                    .append("in", "$$this.v." + fieldPath));
+        return callsetIds.stream().map(id -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + id + "." + fieldPath).collect(Collectors.toList());
+    }
+
+    /**
+     * Builds the stages that turn variantRunData documents into one document per variant holding GROUP_GENOTYPES: for each group, the
+     * genotypes of those of its individuals (or samples) that have one, missing data being left out, so that its size is the number of
+     * called ones. Element order is irrelevant: every chart statistic is a sum or count over them.
+     *
+     * When several runs are involved, their documents are first merged (callset IDs being unique, so are the keys of their sp objects).
+     * Individuals with a single callset contribute that callset's genotype (see callsetValuesExpr()). Those with several callsets contribute
+     * the genotype their callsets agree on, none if they disagree.
+     *
+     * @param groups the individuals (or samples) of each group
+     * @param callsetsByEntity callsets of each individual (or sample) in the involved projects
+     */
+    private static List<BasicDBObject> buildGroupGenotypeStages(ChartRunScope scope, List<Collection<String>> groups, Map<String, List<Callset>> callsetsByEntity) {
+        List<BasicDBObject> stages = new ArrayList<>();
+        if (scope.fMultipleRuns)
+            stages.add(new BasicDBObject("$group", new BasicDBObject("_id", "$_id." + VariantRunDataId.FIELDNAME_VARIANT_ID)
+                    .append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES))));
+
+        String gtField = SampleGenotype.FIELDNAME_GENOTYPECODE;
+        List<Object> groupGenotypeExprs = new ArrayList<>();
+        for (Collection<String> group : groups) {
+            List<Integer> singleCallsetIds = new ArrayList<>();
+            List<Object> multipleCallsetGenotypes = new ArrayList<>();
+            for (String entity : new TreeSet<>(group)) {
+                List<Callset> callsets = callsetsByEntity.getOrDefault(entity, Collections.emptyList());
+                if (callsets.size() == 1)
+                    singleCallsetIds.add(callsets.get(0).getId());
+                else if (callsets.size() > 1) {	// the genotype its callsets agree on, if any
+                    Object calledGenotypes = new BasicDBObject("$filter", new BasicDBObject("input", callsetValuesExpr(callsets.stream().map(Callset::getId).toList(), gtField, scope))
+                            .append("cond", new BasicDBObject("$ne", Arrays.asList("$$this", null))));
+                    multipleCallsetGenotypes.add(letExpr(new BasicDBObject("obs", new BasicDBObject("$setUnion", Arrays.asList(calledGenotypes))),
+                            condExpr(new BasicDBObject("$eq", Arrays.asList(new BasicDBObject("$size", "$$obs"), 1)), new BasicDBObject("$arrayElemAt", Arrays.asList("$$obs", 0)), null)));
+                }
+            }
+
+            List<Object> parts = new ArrayList<>();
+            if (!singleCallsetIds.isEmpty())
+                parts.add(callsetValuesExpr(singleCallsetIds, gtField, scope));
+            if (!multipleCallsetGenotypes.isEmpty())
+                parts.add(multipleCallsetGenotypes);
+
+            Object groupGenotypes = parts.isEmpty() ? new BasicDBObject("$literal", Collections.emptyList()) : (parts.size() == 1 ? parts.get(0) : new BasicDBObject("$concatArrays", parts));
+            groupGenotypeExprs.add(new BasicDBObject("$filter", new BasicDBObject("input", groupGenotypes).append("cond", new BasicDBObject("$ne", Arrays.asList("$$this", null)))));
+        }
+
+        stages.add(new BasicDBObject("$project", new BasicDBObject("_id", 1).append(GROUP_GENOTYPES, groupGenotypeExprs)));
+        return stages;
+    }
+
+    /* Statistics on a list of genotype strings (e.g. "0/1"), with shortcuts for the commonest diploid ones */
+
+    /** @return the first (and, for pooled charts, only) group's genotypes */
+    private static Object pooledGenotypes() {
+        return new BasicDBObject("$arrayElemAt", Arrays.asList("$" + GROUP_GENOTYPES, 0));
+    }
+
+    private static Object genotypeAlleles(Object genotype) {
+        return new BasicDBObject("$split", Arrays.asList(genotype, "/"));
+    }
+
+    private static Object diploidSwitch(Object genotype, Object homRef, Object het, Object homAlt, Object otherwise) {
+        return new BasicDBObject("$switch", new BasicDBObject("branches", Arrays.asList(
+                new BasicDBObject("case", new BasicDBObject("$eq", Arrays.asList(genotype, "0/0"))).append("then", homRef),
+                new BasicDBObject("case", new BasicDBObject("$eq", Arrays.asList(genotype, "0/1"))).append("then", het),
+                new BasicDBObject("case", new BasicDBObject("$eq", Arrays.asList(genotype, "1/1"))).append("then", homAlt)))
+                .append("default", otherwise));
+    }
+
+    private static Object sumOverGenotypes(Object genotypes, Object perGenotypeExpr) {
+        return new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", genotypes).append("as", "g").append("in", perGenotypeExpr)));
+    }
+
+    /** @return an expression summing the number of alternate alleles in genotypes (only meaningful for biallelic variants) */
+    private static Object altAlleleCountExpr(Object genotypes) {
+        Object altCount = new BasicDBObject("$size", new BasicDBObject("$filter", new BasicDBObject("input", genotypeAlleles("$$g")).append("cond", new BasicDBObject("$eq", Arrays.asList("$$this", "1")))));
+        return sumOverGenotypes(genotypes, diploidSwitch("$$g", 0, 1, 2, altCount));
+    }
+
+    /** @return an expression summing the number of alleles (i.e. ploidy) in genotypes */
+    private static Object alleleCountExpr(Object genotypes) {
+        return sumOverGenotypes(genotypes, diploidSwitch("$$g", 2, 2, 2, new BasicDBObject("$size", genotypeAlleles("$$g"))));
+    }
+
+    /** @return an expression counting heterozygous genotypes */
+    private static Object heterozygousCountExpr(Object genotypes) {
+        Object fHet = new BasicDBObject("$gt", Arrays.asList(new BasicDBObject("$size", new BasicDBObject("$setUnion", Arrays.asList(genotypeAlleles("$$g")))), 1));
+        return sumOverGenotypes(genotypes, condExpr(diploidSwitch("$$g", false, true, false, fHet), 1, 0));
+    }
+
+    private static Object letExpr(BasicDBObject vars, Object in) {
+        return new BasicDBObject("$let", new BasicDBObject("vars", vars).append("in", in));
+    }
+
+    private static Object condExpr(Object ifExpr, Object thenExpr, Object elseExpr) {
+        return new BasicDBObject("$cond", Arrays.asList(ifExpr, thenExpr, elseExpr));
+    }
+
     public Map<Long, Double> selectionFst(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
@@ -349,80 +693,63 @@ public class VisualizationService {
 		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
-        Collection<BasicDBList> variantRunDataQueries = varQueryWrapper.getVariantRunDataQueries();
-        final BasicDBList variantQueryDBList = variantRunDataQueries.size() == 1 ? variantRunDataQueries.iterator().next() : new BasicDBList();
-
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
-        {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+        final ChartVariantSource source = openChartVariantSource(gdr, info[0], mongoTemplate, progress);
+        if (source == null)
             return null;
-        }
 
-        final boolean useTempColl = (nTempVarCount != 0);
-        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : mongoTemplate.getCollectionName(VariantRunData.class);
         final ConcurrentHashMap<Long, Double> result = new ConcurrentHashMap<Long, Double>();
+        if (!ensureChartRange(gdr, source, progress, "selectionFst"))
+            return result;
 
-        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionFst: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
-                return result;
-            }
-
+        LOG.debug("Calculating Fst on " + info[0] + " with group sizes: " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
+        ChartMaterial material = getChartMaterial(gdr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        final List<BasicDBObject> fstStages = buildFstStages(scope, material);
         final AtomicInteger nTotalTreatedVariantCount = new AtomicInteger(0);
-        final ProgressIndicator finalProgress = progress;
-
-        List<BasicDBObject> baseQuery = buildFstQuery(gdr, useTempColl, workWithSamples);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
-        
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gdr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
         		result.put(intervalEntry.getKey(), Double.NaN);
         		continue;
         	}
 
-            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            if (!useTempColl)
-	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
-                    if (finalProgress.isAborted())
+                    if (progress.isAborted())
                         return;
 
                     try {
-                        Iterator<Document> it = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).iterator();
-    
-                        if (finalProgress.isAborted())
+                        List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                        Iterator<Document> it = tempVariantIds != null && tempVariantIds.isEmpty() ? Collections.emptyIterator() : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, true, fstStages).iterator();
+
+                        if (progress.isAborted())
                             return;
-    
+
                         /* Structure of a resulting document : {
                          *      _id: ...,
-                         *      alleleMax: 1,
-                         *      populations: [
-                         *          {sampleSize: 100, alleles: [
-                         *              {allele: 0, alleleFrequency: 0.45, heterozygoteFrequency: 0.31},
-                         *              {allele: 1, alleleFrequency: 0.55, heterozygoteFrequency: 0.31},
+                         *      am: 1,  // highest allele index (biallelic variants only)
+                         *      ps: [   // populations having data for this variant
+                         *          {ss: 100, as: [ // sample size, alleles
+                         *              {al: 0, af: 0.45, hf: 0.31},    // allele, allele frequency, heterozygote frequency
+                         *              {al: 1, af: 0.55, hf: 0.31},
                          *          ]},
                          *          {...}
                          *      ]
                          * }
                          */
-    
+
                         double weightedFstSum = 0;
                         double fstWeight = 0;
                         int partialCount = 0;
-    
+
                         while (it.hasNext()) {
                             partialCount++;
                             Document variantResult = it.next();
-    
+
                             List<Document> populations = variantResult.getList(FST_RES_POPULATIONS, Document.class);
                             if (populations.size() < 2) {
                                 // Can not compute Fst with a single population
@@ -431,43 +758,36 @@ public class VisualizationService {
                             }
                             int numPopulations = populations.size();  // r : Number of samples to consider
                             int numAlleles = variantResult.getInteger(FST_RES_ALLELEMAX) + 1;
-    
+
                             // Transposition to [allele][sample] instead of the original [sample][allele] is important to simplify further computations
                             int[] sampleSizes = new int[numPopulations];  // n_i = sampleSizes[population] : Size of the population samples (with missing data filtered out)
                             double[][] alleleFrequencies = new double[numAlleles][numPopulations];  // p_i = alleleFrequencies[allele][population] : Allele frequency in the given population
                             double[][] hetFrequencies = new double[numAlleles][numPopulations];  // h_i = hetFrequencies[allele][population] : Proportion of heterozygotes with the given allele in the given population
-                            //double[] averageAlleleFrequencies = new double[numAlleles];  // p¯ = averageAlleleFrequencies[allele] : Average frequency of the allele over all populations
-                            //double[] alleleVariance = new double[numAlleles];  // s² = alleleVariance[allele] : Variance of the allele frequency over the populations
-                            //double[] averageHetFrequencies = new double[numAlleles];  // h¯ = averageHetFrequencies : Proportion of heterozygotes with the given allele over all populations
-    
-                            //Arrays.fill(averageAlleleFrequencies, 0);
-                            //Arrays.fill(alleleVariance, 0);
-                            //Arrays.fill(averageHetFrequencies, 0);
-    
+
                             for (int allele = 0; allele < numAlleles; allele++) {
                                 Arrays.fill(alleleFrequencies[allele], 0);
                                 Arrays.fill(hetFrequencies[allele], 0);
                             }
-    
+
                             int popIndex = 0;
                             for (Document populationResult : populations) {
                                 int sampleSize = populationResult.getInteger(FST_RES_SAMPLESIZE);
                                 List<Document> alleles = populationResult.getList(FST_RES_ALLELES, Document.class);
-    
+
                                 for (Document alleleResult : alleles) {
                                     int allele = alleleResult.getInteger(FST_RES_ALLELEID);
                                     alleleFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_ALLELEFREQUENCY);
                                     hetFrequencies[allele][popIndex] = alleleResult.getDouble(FST_RES_HETEROZYGOUSFREQUENCY);
                                 }
-    
+
                                 sampleSizes[popIndex] = sampleSize;
                                 popIndex += 1;
                             }
-    
+
                             double averageSampleSize = (double)IntStream.of(sampleSizes).sum() / numPopulations;  // n¯ : Average sample size
                             double totalSize = averageSampleSize * numPopulations;  // r × n¯
                             double sampleSizeCorrection = (totalSize - IntStream.of(sampleSizes).mapToDouble(size -> size*size / totalSize).sum() / (numPopulations - 1));  // n_c
-    
+
                             for (int allele = 0; allele < numAlleles; allele++) {
                                 // Compute weighted averages of allele frequencies (p¯) and heterozygote proportions (h¯)
                                 double averageAlleleFrequency = 0.0;
@@ -477,13 +797,13 @@ public class VisualizationService {
                                     averageHetFrequency += sampleSizes[popIndex] * hetFrequencies[allele][popIndex] / totalSize;
                                 }
                                 averageAlleleFrequency = new BigDecimal(averageAlleleFrequency).setScale(15, RoundingMode.CEILING).doubleValue();   // round it up because it may look like 0.999999999 but actually mean 1
-    
+
                                 // Compute allele frequency variance (s²)
                                 double alleleVariance = 0.0;
                                 for (popIndex = 0; popIndex < numPopulations; popIndex++) {
                                     alleleVariance += sampleSizes[popIndex] * Math.pow(alleleFrequencies[allele][popIndex] - averageAlleleFrequency, 2) / (averageSampleSize * (numPopulations - 1));
                                 }
-    
+
                                 // a = (n¯/nc) × (s² - (1 / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯/4))
                                 double populationVariance = (
                                         (averageSampleSize / sampleSizeCorrection) * (
@@ -494,26 +814,26 @@ public class VisualizationService {
                                             )
                                         )
                                     );
-    
+
                                 // b = (n¯ / (n¯-1))(p¯(1-p¯) - s²(r-1) / r - h¯(2n¯-1)/4n¯)
                                 double individualVariance = (averageSampleSize / (averageSampleSize - 1)) * (
                                         averageAlleleFrequency * (1 - averageAlleleFrequency) -
                                         alleleVariance * (numPopulations-1) / numPopulations -
                                         averageHetFrequency * (2*averageSampleSize - 1) / (4 * averageSampleSize)
                                     );
-    
+
                                 // c = h¯/2
                                 double gameteVariance = averageHetFrequency / 2;
-                                
+
                                 if (!Double.isNaN(populationVariance) && !Double.isNaN(individualVariance) && !Double.isNaN(gameteVariance)) {
                                     weightedFstSum += populationVariance;
                                     fstWeight += populationVariance + individualVariance + gameteVariance;
                                 }
                             }
                         }
-    
+
                         result.put(intervalEntry.getKey(), weightedFstSum / fstWeight);
-                        finalProgress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
+                        progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                         nTotalTreatedVariantCount.addAndGet(partialCount);
                     }
                     catch (MongoCommandException mce) {
@@ -532,7 +852,7 @@ public class VisualizationService {
         finally {
             MongoTemplateManager.releaseExecutor(executor, progress.getProcessId());
         }
-        
+
         if (progress.isAborted())
             return null;
 
@@ -543,7 +863,7 @@ public class VisualizationService {
 
         return new TreeMap<Long, Double>(result);
     }
-    
+
     public List<Map<Long, Double>> selectionTajimaD(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
@@ -554,39 +874,25 @@ public class VisualizationService {
 		        ProgressIndicator.registerProgressIndicator(pi);
 		    	return pi;
 		    });
-        
-        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
-      
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
-        {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
-            return null;
-        }
 
-        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
-        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
-        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
-        final boolean useTempColl = (nTempVarCount != 0);
-        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
+        final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        final ChartVariantSource source = openChartVariantSource(gdr, info[0], mongoTemplate, progress);
+        if (source == null)
+            return null;
+
         final ConcurrentHashMap<Long, Double> tajimaD = new ConcurrentHashMap<Long, Double>();
         final ConcurrentHashMap<Long, Double> segregatingSites = new ConcurrentHashMap<Long, Double>();
+        if (!ensureChartRange(gdr, source, progress, "selectionTajimaD"))
+            return new ArrayList<>();
 
-        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionTajimaD: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
-                return new ArrayList<>();
-            }
-
-        List<BasicDBObject> baseQuery = buildTajimaDQuery(gdr, useTempColl, workWithSamples);
+        ChartMaterial material = getChartMaterial(gdr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        final List<BasicDBObject> tajimaDStages = buildTajimaDStages(gdr, mongoTemplate, scope, material);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gdr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
                 segregatingSites.put(intervalEntry.getKey(), 0.0);
@@ -594,20 +900,16 @@ public class VisualizationService {
         		continue;
         	}
 
-        	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
-	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
-                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
+
+                    List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                    Document chunk = tempVariantIds != null && tempVariantIds.isEmpty() ? null : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, true, tajimaDStages).first();
                     if (chunk != null) {
-                        double value = chunk.getDouble(TJD_RES_TAJIMAD);
-                        double sites = (double)chunk.getInteger(TJD_RES_SEGREGATINGSITES);
-                        segregatingSites.put(intervalEntry.getKey(), sites);
-                        tajimaD.put(intervalEntry.getKey(), value);
+                        segregatingSites.put(intervalEntry.getKey(), ((Number) chunk.get(TJD_RES_SEGREGATINGSITES)).doubleValue());
+                        tajimaD.put(intervalEntry.getKey(), chunk.getDouble(TJD_RES_TAJIMAD));
                     } else {
                         segregatingSites.put(intervalEntry.getKey(), 0.0);
                         tajimaD.put(intervalEntry.getKey(), Double.NaN);
@@ -637,7 +939,7 @@ public class VisualizationService {
 
         return Arrays.asList(new TreeMap<>(tajimaD), new TreeMap<>(segregatingSites));
     }
-    
+
     public Map<Long, Float> selectionMaf(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
@@ -648,58 +950,39 @@ public class VisualizationService {
 		        ProgressIndicator.registerProgressIndicator(pi);
 		    	return pi;
 		    });
-        
+
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
-
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
-        {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+        final ChartVariantSource source = openChartVariantSource(gdr, info[0], mongoTemplate, progress);
+        if (source == null)
             return null;
-        }
 
-        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
-        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
-        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
-        final boolean useTempColl = (nTempVarCount != 0);
-        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
         final Map<Long, Float> result = new ConcurrentHashMap<>();
+        if (!ensureChartRange(gdr, source, progress, "selectionMaf"))
+            return result;
 
-        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionMaf: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
-                return result;
-            }
+        ChartMaterial material = getChartMaterial(gdr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        final List<BasicDBObject> mafStages = buildMafStages(scope, material);
 
-        List<BasicDBObject> baseQuery = buildMafQuery(gdr, useTempColl, workWithSamples);
-        
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
         AtomicInteger totalVariantsProcessed = new AtomicInteger(0);
 
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gdr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
         		result.put(intervalEntry.getKey(), Float.NaN);
         		continue;
         	}
 
-            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            if (!useTempColl)
-	            intervalEntry.getValue().append(VariantData.FIELDNAME_KNOWN_ALLELES + ".2", new BasicDBObject("$exists", false)); // exclude multi-allelic variants from MAF calculation
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
 
-                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
+                    List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                    Document chunk = tempVariantIds != null && tempVariantIds.isEmpty() ? null : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, true, mafStages).first();  // There's only one interval per query
 
-                    Document chunk = queryResult.first();  // There's only one interval per query
-                    
                     if (chunk == null)
                         result.put(intervalEntry.getKey(), Float.NaN);
                     else {
@@ -708,11 +991,11 @@ public class VisualizationService {
                         if (nVariantsInInterval == 0)
                             result.put(intervalEntry.getKey(), Float.NaN);
                         else {
-                            float freq = chunk.getDouble("t").floatValue() / nVariantsInInterval;
+                            float freq = ((Number) chunk.get("t")).floatValue() / nVariantsInInterval;
                             result.put(intervalEntry.getKey(), Math.min(freq, 100f - freq));
                         }
                     }
-                    
+
                     progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                     intervalEntry.setValue(null); // help GC
                 }
@@ -738,127 +1021,6 @@ public class VisualizationService {
         return result;
     }
 
-    private static final String GENOTYPE_DATA_S2_DATA = "dt";
-    private static final String GENOTYPE_DATA_S5_SPKEYVAL = "sp";
-    private static final String GENOTYPE_DATA_S8_BIO_ENTITY = "be";
-    private static final String GENOTYPE_DATA_S7_CALLSET_ID = "cs";
-    private static final String GENOTYPE_DATA_S7_GENOTYPE = "gy";
-    private static final String GENOTYPE_DATA_S7_POSITION = "ss";
-    private static final String GENOTYPE_DATA_S10_VARIANTID = "vi";
-    private static final String GENOTYPE_DATA_S10_INDIVIDUALID = "ii";
-
-    private List<BasicDBObject> buildGenotypeDataQuery(MgdbChartRequest gdr, boolean useTempColl, Map<String, List<Callset>> bioEntityToCallSetListMap, boolean keepPosition, boolean fGotMultiCallSetIndividuals, boolean workWithSamples) throws Exception {
-        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Integer[] projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toArray(Integer[]::new);
-        boolean fWillNeedToMergeObjects = projIDs.length > 1;   // if multiple projects or runs, we will need to merge objects to have just one record per variant
-        if (!fWillNeedToMergeObjects && bioEntityToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> cs.getRun()).distinct().count() > 1)
-            fWillNeedToMergeObjects = true; // even in a single project, multiple runs involved
-
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        List<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
-
-        // Stage 1 : placeholder for initial match stage
-        pipeline.add(null);
-
-        if (useTempColl) {
-            // Stage 2 : Lookup from temp collection to variantRunData
-            BasicDBObject lookup = new BasicDBObject();
-            lookup.put("from", mongoTemplate.getCollectionName(VariantRunData.class));
-            lookup.put("localField", "_id");
-            lookup.put("foreignField", "_id." + VariantRunDataId.FIELDNAME_VARIANT_ID);
-            lookup.put("as", GENOTYPE_DATA_S2_DATA);
-            pipeline.add(new BasicDBObject("$lookup", lookup));
-
-            // Stage 3 : Unwind data
-            pipeline.add(new BasicDBObject("$unwind", "$" + GENOTYPE_DATA_S2_DATA));
-        }
-        
-        // Stage 4 : Keep only the right projects / runs
-        ArrayList<BasicDBObject> projectFilterList = new ArrayList<>();
-        Map<Integer, Set<String>> involvedProjectRuns = bioEntityToCallSetListMap.values().stream().flatMap(List::stream).collect(Collectors.groupingBy(Callset::getProjectId,Collectors.mapping(Callset::getRun, Collectors.toSet())));
-        for (int projId : involvedProjectRuns.keySet()) {
-        	Set<String> projectInvolvedRuns = involvedProjectRuns.get(projId);
-            BasicDBObject projectFilter = new BasicDBObject((useTempColl ? GENOTYPE_DATA_S2_DATA + "." : "") + "_id." + VariantRunDataId.FIELDNAME_PROJECT_ID, projId);
-            // if not all of this project's runs are involved, only match the required ones
-            boolean fNotAllRunsNeeded = projectInvolvedRuns.size() != mongoTemplate.findDistinct(new Query(Criteria.where("_id").is(projId)), GenotypingProject.FIELDNAME_RUNS, GenotypingProject.class, String.class).size();
-            projectFilterList.add(fNotAllRunsNeeded ? new BasicDBObject("$and", Arrays.asList(projectFilter, new BasicDBObject((useTempColl ? GENOTYPE_DATA_S2_DATA + "." : "") + "_id." + VariantRunDataId.FIELDNAME_RUNNAME, new BasicDBObject("$in", projectInvolvedRuns)))) : projectFilter);
-        }
-
-        if (!projectFilterList.isEmpty())
-        	pipeline.add(new BasicDBObject("$match", projectFilterList.size() == 1 ? projectFilterList.get(0) : new BasicDBObject("$or", projectFilterList)));
-
-        if (fGotMultiCallSetIndividuals) {
-            // Stage 5 : Convert samples to an array
-            pipeline.add(new BasicDBObject("$set", new BasicDBObject(GENOTYPE_DATA_S5_SPKEYVAL, new BasicDBObject("$objectToArray", "$" + (useTempColl ? GENOTYPE_DATA_S2_DATA + "." + VariantRunData.FIELDNAME_SAMPLEGENOTYPES : VariantRunData.FIELDNAME_SAMPLEGENOTYPES)))));
-
-            // Stage 6 : Unwind samples
-            pipeline.add(new BasicDBObject("$unwind", "$" + GENOTYPE_DATA_S5_SPKEYVAL));
-
-            // Stage 7 : Convert key and value
-            BasicDBObject spkeyval = new BasicDBObject();
-            spkeyval.put(GENOTYPE_DATA_S7_CALLSET_ID, new BasicDBObject("$toInt", "$" + GENOTYPE_DATA_S5_SPKEYVAL + ".k"));
-            spkeyval.put(GENOTYPE_DATA_S7_GENOTYPE, "$" + GENOTYPE_DATA_S5_SPKEYVAL + ".v.gt");
-            if (keepPosition)
-                spkeyval.put(GENOTYPE_DATA_S7_POSITION, "$" + Assembly.getThreadBoundVariantRefPosPath() + ".ss");
-            pipeline.add(new BasicDBObject("$project", spkeyval));
-
-            // Stage 8 : Keep only the callsets we are interested in
-            List<Integer> allCallsetIDs = mongoTemplate.findDistinct(new Query(), GenotypingSample.FIELDNAME_CALLSETS + "._id", GenotypingSample.class, Integer.class);
-            List<Integer> involvedCallsetIDs = bioEntityToCallSetListMap.values().stream().flatMap(Collection::stream).map(cs -> cs.getId()).distinct().toList();
-            if (allCallsetIDs.size() != involvedCallsetIDs.size())	// if all are involved don't bother filtering
-            	pipeline.add(new BasicDBObject("$match", new BasicDBObject(GENOTYPE_DATA_S7_CALLSET_ID, involvedCallsetIDs.size() < allCallsetIDs.size() / 2 ? new BasicDBObject("$in", involvedCallsetIDs) : new BasicDBObject("$not", new BasicDBObject("$in", CollectionUtils.disjunction(allCallsetIDs, involvedCallsetIDs))))));
-            
-            // Stage 9 : Create bio-entity field using $switch
-            BasicDBList branches = new BasicDBList();
-            for (Map.Entry<String, List<Callset>> entry : bioEntityToCallSetListMap.entrySet()) {
-                if (entry.getValue().size() > 1)
-                    branches.add(new BasicDBObject().append("case", new BasicDBObject("$in", new Object[]{"$" + GENOTYPE_DATA_S7_CALLSET_ID, entry.getValue().stream().map(cs -> cs.getId()).toList()})).append("then", entry.getKey()));
-            }
-            BasicDBObject switchExpr = new BasicDBObject().append("branches", branches).append("default", "$" + GENOTYPE_DATA_S7_CALLSET_ID);
-            pipeline.add(new BasicDBObject("$addFields",new BasicDBObject(GENOTYPE_DATA_S8_BIO_ENTITY , new BasicDBObject("$switch", switchExpr))));
-            
-            // Stage 10 : Regroup individual runs
-            BasicDBObject individualGroup = new BasicDBObject();
-            BasicDBObject individualGroupId = new BasicDBObject();
-            individualGroupId.put(GENOTYPE_DATA_S10_VARIANTID, "$_id" + (!useTempColl? "." + FST_S22_VARIANTID : ""));
-            individualGroupId.put(GENOTYPE_DATA_S10_INDIVIDUALID, "$" + GENOTYPE_DATA_S8_BIO_ENTITY );
-            individualGroup.put("_id", individualGroupId);
-            individualGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$addToSet", "$" + GENOTYPE_DATA_S7_GENOTYPE));
-            individualGroup.put(VariantRunDataId.FIELDNAME_PROJECT_ID, new BasicDBObject("$addToSet", "$_id." + VariantRunDataId.FIELDNAME_PROJECT_ID));
-            if (keepPosition)
-                individualGroup.put(GENOTYPE_DATA_S7_POSITION, new BasicDBObject("$first", "$" + GENOTYPE_DATA_S7_POSITION));
-            pipeline.add(new BasicDBObject("$group", individualGroup));
-
-            // Stage 11 : Weed out incoherent genotypes
-            pipeline.add(new BasicDBObject("$match", new BasicDBObject(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$size", 1))));
-
-            // Stage 12 : Convert back to sp object
-            pipeline.add(new BasicDBObject("$project", new BasicDBObject("_id", "$_id." + FST_S22_VARIANTID)
-            		.append(VariantRunDataId.FIELDNAME_PROJECT_ID, 1).append(GENOTYPE_DATA_S7_POSITION, 1)
-            		.append(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$arrayToObject", Arrays.asList(Arrays.asList(new BasicDBObject()
-																        .append("k", new BasicDBObject("$toString", "$_id." + GENOTYPE_DATA_S10_INDIVIDUALID))
-																        .append("v", new BasicDBObject(TJD_S18_GENOTYPE, new BasicDBObject("$arrayElemAt", Arrays.asList("$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES, 0))))))))
-            ));
-        }
-
-        if (fWillNeedToMergeObjects || useTempColl) {  // merge genotypes into a single document per variant
-            BasicDBObject projectMergeGroup = new BasicDBObject();
-            projectMergeGroup.put("_id", "$_id" + (!useTempColl && !fGotMultiCallSetIndividuals ? "." + FST_S22_VARIANTID : ""));
-            projectMergeGroup.put(VariantRunData.FIELDNAME_SAMPLEGENOTYPES, new BasicDBObject("$mergeObjects", "$" + (useTempColl && !fGotMultiCallSetIndividuals ? GENOTYPE_DATA_S2_DATA + "." : "") + VariantRunData.FIELDNAME_SAMPLEGENOTYPES));
-            pipeline.add(new BasicDBObject("$group", projectMergeGroup));
-        }
-        return pipeline;
-    }
-
-    private static final String FST_S14_POPULATIONGENOTYPES = "pg";
-    private static final String FST_S15_POPULATION = "pp";
-    private static final String FST_S19_GENOTYPE = "gn";
-    private static final String FST_S20_HETEROZYGOTE = "ht";
-    private static final String FST_S22_VARIANTID = "vi";
-    private static final String FST_S22_POPULATIONID = "pi";
-    private static final String FST_S22_ALLELECOUNT = "ac";
-    private static final String FST_S22_HETEROZYGOUSCOUNT = "hc";
-
     private static final String FST_RES_SAMPLESIZE = "ss";
     private static final String FST_RES_ALLELEID = "al";
     private static final String FST_RES_ALLELEMAX = "am";
@@ -867,156 +1029,50 @@ public class VisualizationService {
     private static final String FST_RES_ALLELES = "as";
     private static final String FST_RES_POPULATIONS = "ps";
 
+    /** Fst needs per-allele frequencies (biallelic variants only) for each group, kept separate (one population each) */
+    private static List<BasicDBObject> buildFstStages(ChartRunScope scope, ChartMaterial material) {
+        List<BasicDBObject> stages = buildGroupGenotypeStages(scope, material.disjoint(), material.callsetsByEntity);
 
-    private List<BasicDBObject> buildFstQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {        
-        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-    	LOG.debug("Calculating Fst on " + info[0] + " with group sizes: " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
+        // allele frequencies: 0 = ref, 1 = alt ; heterozygote frequency is the same for both alleles (biallelic)
+        Object afRef = new BasicDBObject("$divide", Arrays.asList(new BasicDBObject("$subtract", Arrays.asList("$$totalCopies", "$$altCopies")), "$$totalCopies"));
+        Object afAlt = new BasicDBObject("$divide", Arrays.asList("$$altCopies", "$$totalCopies"));
+        Object hf = new BasicDBObject("$divide", Arrays.asList("$$heCount", "$$ss"));
+        List<BasicDBObject> alleleEntries = Arrays.asList(
+                new BasicDBObject(FST_RES_ALLELEID, 0).append(FST_RES_ALLELEFREQUENCY, afRef).append(FST_RES_HETEROZYGOUSFREQUENCY, hf),
+                new BasicDBObject(FST_RES_ALLELEID, 1).append(FST_RES_ALLELEFREQUENCY, afAlt).append(FST_RES_HETEROZYGOUSFREQUENCY, hf));
+        Object population = new BasicDBObject(FST_RES_SAMPLESIZE, "$$ss").append(FST_RES_ALLELES, alleleEntries);
 
-        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
+        // populations with no data at all (ss == 0) are left out, so that selectionFst can tell whether at least 2 have some
+        Object populationOrNull = letExpr(new BasicDBObject("ss", new BasicDBObject("$size", "$$gt")),
+                condExpr(new BasicDBObject("$eq", Arrays.asList("$$ss", 0)), null,
+                        letExpr(new BasicDBObject("altCopies", altAlleleCountExpr("$$gt")).append("totalCopies", alleleCountExpr("$$gt")).append("heCount", heterozygousCountExpr("$$gt")), population)));
 
-        List<Collection<String>> selectedMaterial = new ArrayList<Collection<String>>();
-        List<List<String>> ga4ghCallsetIds = gdr.getAllCallSetIds();
-        for (int i = 0; i < ga4ghCallsetIds.size(); i++)
-            selectedMaterial.add(ga4ghCallsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : ga4ghCallsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+        Object populations = new BasicDBObject("$filter", new BasicDBObject()
+                .append("input", new BasicDBObject("$map", new BasicDBObject("input", "$" + GROUP_GENOTYPES).append("as", "gt").append("in", populationOrNull)))
+                .append("cond", new BasicDBObject("$ne", Arrays.asList("$$this", null))));
+        stages.add(new BasicDBObject("$project", new BasicDBObject("_id", 1).append(FST_RES_ALLELEMAX, new BasicDBObject("$literal", 1)).append(FST_RES_POPULATIONS, populations)));
 
-        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
-        for (Collection<String> group : selectedMaterial)
-            if (!workWithSamples)
-                individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, group));
-            else 
-                individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, group));
-
-        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals, workWithSamples);
-
-        // Stage 14 : Get populations genotypes
-        BasicDBList populationGenotypes = new BasicDBList();
-        for (Collection<String> group : selectedMaterial)
-            populationGenotypes.add(getFullPathToGenotypes(group, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals));
-
-        BasicDBObject projectGenotypes = new BasicDBObject(FST_S14_POPULATIONGENOTYPES, populationGenotypes);
-        pipeline.add(new BasicDBObject("$project", projectGenotypes));
-
-        // Stage 15 : Split by population
-        BasicDBObject unwindPopulations = new BasicDBObject();
-        unwindPopulations.put("path", "$" + FST_S14_POPULATIONGENOTYPES);
-        unwindPopulations.put("includeArrayIndex", FST_S15_POPULATION);
-        pipeline.add(new BasicDBObject("$unwind", unwindPopulations));
-
-        // Stage 16 : Compute sample size
-        BasicDBObject sampleSizeMapping = new BasicDBObject();
-        sampleSizeMapping.put("input", "$" + FST_S14_POPULATIONGENOTYPES);
-        sampleSizeMapping.put("in", new BasicDBObject("$cmp", Arrays.asList("$$this", null)));
-        BasicDBObject addSampleSize = new BasicDBObject("$sum", new BasicDBObject("$map", sampleSizeMapping));
-        pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(FST_RES_SAMPLESIZE, addSampleSize)));
-
-        // Stage 17 : Unwind by genotype
-        pipeline.add(new BasicDBObject("$unwind", "$" + FST_S14_POPULATIONGENOTYPES));
-
-        // Stage 18 : Eliminate missing genotypes
-        BasicDBObject matchMissing = new BasicDBObject(FST_S14_POPULATIONGENOTYPES, new BasicDBObject("$ne", null));
-        pipeline.add(new BasicDBObject("$match", matchMissing));
-
-        // Stage 19 : Split genotype strings
-        BasicDBObject projectSplitGenotypes = new BasicDBObject();
-        projectSplitGenotypes.put(FST_S15_POPULATION, 1);
-        projectSplitGenotypes.put(FST_RES_SAMPLESIZE, 1);
-        BasicDBObject splitMapping = new BasicDBObject();
-        splitMapping.put("input", new BasicDBObject("$split", Arrays.asList("$" + FST_S14_POPULATIONGENOTYPES, "/")));
-        splitMapping.put("in", new BasicDBObject("$toInt", "$$this"));
-        projectSplitGenotypes.put(FST_S19_GENOTYPE, new BasicDBObject("$map", splitMapping));
-        pipeline.add(new BasicDBObject("$project", projectSplitGenotypes));
-
-        // Stage 20 : Detect heterozygotes
-        BasicDBList genotypeElements = new BasicDBList();  // TODO : Ploidy ?
-        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList("$" + FST_S19_GENOTYPE, 0)));
-        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList("$" + FST_S19_GENOTYPE, 1)));
-        BasicDBObject addHeterozygote = new BasicDBObject(FST_S20_HETEROZYGOTE, new BasicDBObject("$ne", genotypeElements));
-        pipeline.add(new BasicDBObject("$addFields", addHeterozygote));
-
-        // Stage 21 : Unwind alleles
-        pipeline.add(new BasicDBObject("$unwind", "$" + FST_S19_GENOTYPE));
-
-        // Stage 22 : Group by allele
-        BasicDBObject groupAllele = new BasicDBObject();
-        BasicDBObject groupAlleleId = new BasicDBObject();
-        groupAlleleId.put(FST_S22_VARIANTID, "$_id");
-        groupAlleleId.put(FST_S22_POPULATIONID, "$" + FST_S15_POPULATION);
-        groupAlleleId.put(FST_RES_ALLELEID, "$" + FST_S19_GENOTYPE);
-        groupAllele.put("_id", groupAlleleId);
-        groupAllele.put(FST_RES_SAMPLESIZE, new BasicDBObject("$first", "$" + FST_RES_SAMPLESIZE));
-        groupAllele.put(FST_S22_ALLELECOUNT, new BasicDBObject("$sum", 1));
-        groupAllele.put(FST_S22_HETEROZYGOUSCOUNT, new BasicDBObject("$sum", new BasicDBObject("$toInt", "$" + FST_S20_HETEROZYGOTE)));
-        pipeline.add(new BasicDBObject("$group", groupAllele));
-
-        // Stage 23 : Group by population
-        BasicDBObject groupPopulation = new BasicDBObject();
-        BasicDBObject groupPopulationId = new BasicDBObject();
-        groupPopulationId.put(FST_S22_VARIANTID, "$_id." + FST_S22_VARIANTID);
-        groupPopulationId.put(FST_S22_POPULATIONID, "$_id." + FST_S22_POPULATIONID);
-        groupPopulation.put("_id", groupPopulationId);
-        groupPopulation.put(FST_RES_SAMPLESIZE, new BasicDBObject("$first", "$" + FST_RES_SAMPLESIZE));
-        groupPopulation.put(FST_RES_ALLELEMAX, new BasicDBObject("$max", "$_id." + FST_RES_ALLELEID));
-
-        BasicDBObject groupPopulationAllele = new BasicDBObject();
-        groupPopulationAllele.put(FST_RES_ALLELEID, "$_id." + FST_RES_ALLELEID);
-        BasicDBObject alleleFrequencyOperation = new BasicDBObject("$divide", Arrays.asList("$" + FST_S22_ALLELECOUNT, new BasicDBObject("$multiply", Arrays.asList("$" + FST_RES_SAMPLESIZE, 2))));
-        BasicDBObject hetFrequencyOperation = new BasicDBObject("$divide", Arrays.asList("$" + FST_S22_HETEROZYGOUSCOUNT, "$" + FST_RES_SAMPLESIZE));
-        groupPopulationAllele.put(FST_RES_ALLELEFREQUENCY, alleleFrequencyOperation);
-        groupPopulationAllele.put(FST_RES_HETEROZYGOUSFREQUENCY, hetFrequencyOperation);
-
-        groupPopulation.put(FST_RES_ALLELES, new BasicDBObject("$push", groupPopulationAllele));
-        pipeline.add(new BasicDBObject("$group", groupPopulation));
-
-        // Stage 24 : Group by variant
-        BasicDBObject groupVariant = new BasicDBObject();
-        groupVariant.put("_id", "$_id." + FST_S22_VARIANTID);
-        groupVariant.put(FST_RES_ALLELEMAX, new BasicDBObject("$max", "$" + FST_RES_ALLELEMAX));
-        BasicDBObject groupVariantPopulation = new BasicDBObject();
-        groupVariantPopulation.put(FST_RES_SAMPLESIZE, "$" + FST_RES_SAMPLESIZE);
-        groupVariantPopulation.put(FST_RES_ALLELES, "$" + FST_RES_ALLELES);
-        groupVariant.put(FST_RES_POPULATIONS, new BasicDBObject("$push", groupVariantPopulation));
-        pipeline.add(new BasicDBObject("$group", groupVariant));
-
-        return pipeline;
+        LOG.debug("Fst stages " + stages);
+        return stages;
     }
 
-    private static final String TJD_S14_GENOTYPES = "gl";
-    private static final String TJD_S15_SAMPLESIZE = "sz";
-    private static final String TJD_S18_GENOTYPE = SampleGenotype.FIELDNAME_GENOTYPECODE;
-    private static final String TJD_S20_VARIANTID = "vi";
-    private static final String TJD_S20_ALLELEID = "ai";
-    private static final String TJD_S20_ALLELECOUNT = "ac";
-    private static final String TJD_S21_NUMALLELES = "na";
     private static final String TJD_S23_ALLELEFREQUENCY = "k";
     private static final String TJD_S24_FREQUENCYSUM = "kc";
 
     private static final String TJD_RES_SEGREGATINGSITES = "sg";
     private static final String TJD_RES_TAJIMAD = "tjd";
 
-    private List<BasicDBObject> buildTajimaDQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
-//      System.err.println("Tajima : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
-
+    /** Tajima's D needs alt / total allele counts (biallelic variants only), all groups being pooled */
+    private static List<BasicDBObject> buildTajimaDStages(MgdbChartRequest gdr, MongoTemplate mongoTemplate, ChartRunScope scope, ChartMaterial material) throws Exception {
         String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
         Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
 
-        HashSet<String> selectedMaterial = new HashSet<String>();
-        List<List<String>> callsetIds = gdr.getAllCallSetIds();
-        for (int i = 0; i < callsetIds.size(); i++)
-            selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-
-        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
-        if (!workWithSamples)
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
-        else 
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
-
-        final int sampleSize = 2*selectedMaterial.size();
-        int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
-        List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
-            intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-        intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
+        // sampleSize = total allele count per locus assuming no missing data = ploidy × #individuals
+        List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
+        Integer[] ploidyLevels = genotypingProjects.stream().map(GenotypingProject::getPloidyLevel).distinct().toArray(Integer[]::new);
+        if (ploidyLevels.length > 1)
+            throw new Exception("Inconsistent ploidy levels among projects " + info[1] + " in database " + info[0]);
+        final int sampleSize = ploidyLevels[0] * material.entityCount;
 
         double a1 = 0, a2 = 0;
         for (int i = 1; i < sampleSize; i++) {
@@ -1031,188 +1087,83 @@ public class VisualizationService {
         double e1 = c1 / a1;
         double e2 = c2 / (a1*a1 + a2);
 
-        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals, workWithSamples);
-        String refPosPath = Assembly.getThreadBoundVariantRefPosPath();
+        List<BasicDBObject> stages = buildGroupGenotypeStages(scope, material.pooled(), material.callsetsByEntity);
 
-        // Stage 14 : Get the genotypes needed
-        DBObject gtArray;
-        if (fGotMultiCallSetIndividuals)
-        	gtArray = new BasicDBObject("$map", new BasicDBObject("input", new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S5_SPKEYVAL)).append("as", "cs").append("in", "$$cs.v." + TJD_S18_GENOTYPE));
-        else
-        	gtArray = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals);
-        BasicDBObject genotypeProjection = new BasicDBObject();
-        genotypeProjection.put(refPosPath, 1);
-        genotypeProjection.put(TJD_S14_GENOTYPES, gtArray);
-        pipeline.add(new BasicDBObject("$project", genotypeProjection));
+        // Segregating ⟺ 0 < altAlleles < totalAlleles. For segregating sites, k = p(1-p); else k = null.
+        Object segregatingCond = new BasicDBObject("$and", Arrays.asList(
+                new BasicDBObject("$gt", Arrays.asList("$$altAlleles", 0)),
+                new BasicDBObject("$lt", Arrays.asList("$$altAlleles", "$$totalAlleles"))));
+        Object pq = letExpr(new BasicDBObject("freq", new BasicDBObject("$divide", Arrays.asList("$$altAlleles", "$$totalAlleles"))),
+                new BasicDBObject("$multiply", Arrays.asList("$$freq", new BasicDBObject("$subtract", Arrays.asList(1, "$$freq")))));
+        Object kExpr = letExpr(new BasicDBObject("gt", pooledGenotypes()),
+                letExpr(new BasicDBObject("altAlleles", altAlleleCountExpr("$$gt")).append("totalAlleles", alleleCountExpr("$$gt")), condExpr(segregatingCond, pq, null)));
+        stages.add(new BasicDBObject("$project", new BasicDBObject(TJD_S23_ALLELEFREQUENCY, kExpr)));
 
-        // Stage 15 : Count non-null genotypes
-        BasicDBObject sampleSizeMapping = new BasicDBObject();
-        sampleSizeMapping.put("input", "$" + TJD_S14_GENOTYPES);
-        sampleSizeMapping.put("in", new BasicDBObject("$cmp", Arrays.asList("$$this", null)));
-        BasicDBObject addSampleSize = new BasicDBObject("$sum", new BasicDBObject("$map", sampleSizeMapping));
-        pipeline.add(new BasicDBObject("$addFields", new BasicDBObject(TJD_S15_SAMPLESIZE, addSampleSize)));
-
-        // Stage 16 : Unwind individuals
-        pipeline.add(new BasicDBObject("$unwind", "$" + TJD_S14_GENOTYPES));
-
-        // Stage 17 : Eliminate missing genotypes
-        BasicDBObject matchMissing = new BasicDBObject(TJD_S14_GENOTYPES, new BasicDBObject("$ne", null));
-        pipeline.add(new BasicDBObject("$match", matchMissing));
-
-        // Stage 18 : Split the genotype string
-        BasicDBObject splitMapping = new BasicDBObject();
-        splitMapping.put("input", new BasicDBObject("$split", Arrays.asList("$" + TJD_S14_GENOTYPES, "/")));
-        splitMapping.put("in", new BasicDBObject("$toInt", "$$this"));
-        BasicDBObject splitProjection = new BasicDBObject();
-        splitProjection.put(refPosPath, 1);
-        splitProjection.put(TJD_S18_GENOTYPE, new BasicDBObject("$map", splitMapping));
-        splitProjection.put(TJD_S15_SAMPLESIZE, 1);
-        pipeline.add(new BasicDBObject("$project", splitProjection));
-
-        // Stage 19 : Unwind alleles
-        pipeline.add(new BasicDBObject("$unwind", "$" + TJD_S18_GENOTYPE));
-
-        // Stage 20 : Count the alleles
-        BasicDBObject alleleGroupId = new BasicDBObject();
-        alleleGroupId.put(TJD_S20_VARIANTID, "$_id");
-        alleleGroupId.put(TJD_S20_ALLELEID, "$" + TJD_S18_GENOTYPE);
-        BasicDBObject alleleGroup = new BasicDBObject();
-        alleleGroup.put("_id", alleleGroupId);
-        alleleGroup.put(VariantData.FIELDNAME_POSITIONS, new BasicDBObject("$first", "$" + refPosPath));
-        alleleGroup.put(TJD_S20_ALLELECOUNT, new BasicDBObject("$sum", 1));
-        alleleGroup.put(TJD_S15_SAMPLESIZE, new BasicDBObject("$first", "$" + TJD_S15_SAMPLESIZE));
-        pipeline.add(new BasicDBObject("$group", alleleGroup));
-
-        // Stage 21 : Group by variant, keeping only one of the two alleles
-        BasicDBObject variantGroup = new BasicDBObject();
-        variantGroup.put("_id", "$_id." + TJD_S20_VARIANTID);
-        variantGroup.put(TJD_S20_ALLELECOUNT, new BasicDBObject("$first", "$" + TJD_S20_ALLELECOUNT));
-        variantGroup.put(TJD_S21_NUMALLELES, new BasicDBObject("$sum", 1));
-        variantGroup.put(TJD_S15_SAMPLESIZE, new BasicDBObject("$first", "$" + TJD_S15_SAMPLESIZE));
-        variantGroup.put(VariantData.FIELDNAME_POSITIONS, new BasicDBObject("$first", "$" + VariantData.FIELDNAME_POSITIONS));
-        pipeline.add(new BasicDBObject("$group", variantGroup));
-
-        // Stage 22 : Keep only biallelic variants
-        pipeline.add(new BasicDBObject("$match", new BasicDBObject(TJD_S21_NUMALLELES, 2)));
-
-        // Stage 23 : Compute the average pairwise polymorphism for one variant
-        BasicDBObject alleleFrequency = new BasicDBObject();
-        alleleFrequency.put("vars", new BasicDBObject("freq",
-                new BasicDBObject("$divide", Arrays.asList("$" + TJD_S20_ALLELECOUNT,
-                    new BasicDBObject("$multiply", Arrays.asList("$" + TJD_S15_SAMPLESIZE, 2))))));
-        alleleFrequency.put("in", new BasicDBObject("$multiply", Arrays.asList("$$freq", new BasicDBObject("$subtract", Arrays.asList(1, "$$freq")))));  // p(1-p)
-        BasicDBObject frequencyProjection = new BasicDBObject();
-        frequencyProjection.put(VariantData.FIELDNAME_POSITIONS, 1);
-        frequencyProjection.put(TJD_S23_ALLELEFREQUENCY, new BasicDBObject("$let", alleleFrequency));
-        pipeline.add(new BasicDBObject("$project", frequencyProjection));
-
-        // Stage 24 : Group by graph interval
+        // ── Group: sum p(1-p) over segregating sites, count segregating sites ──────────
         BasicDBObject outputGroup = new BasicDBObject();
         outputGroup.put("_id", 1);
-        outputGroup.put(TJD_S24_FREQUENCYSUM, new BasicDBObject("$sum", "$" + TJD_S23_ALLELEFREQUENCY));
-        outputGroup.put(TJD_RES_SEGREGATINGSITES, new BasicDBObject("$sum", 1));
-        pipeline.add(new BasicDBObject("$group", outputGroup));
+        outputGroup.put(TJD_S24_FREQUENCYSUM, new BasicDBObject("$sum", new BasicDBObject("$ifNull", Arrays.asList("$" + TJD_S23_ALLELEFREQUENCY, 0))));
+        outputGroup.put(TJD_RES_SEGREGATINGSITES, new BasicDBObject("$sum", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", Arrays.asList("$" + TJD_S23_ALLELEFREQUENCY, null)), 0, 1))));
+        stages.add(new BasicDBObject("$group", outputGroup));
 
-        // Stage 25 : Compute the Tajima's D value
-        BasicDBObject finalProject = new BasicDBObject();
-        finalProject.put(TJD_RES_SEGREGATINGSITES, 1);
-        finalProject.put(TJD_RES_TAJIMAD, new BasicDBObject("$divide", Arrays.asList(
-            new BasicDBObject("$subtract", Arrays.asList(
-                new BasicDBObject("$divide", Arrays.asList(
-                    new BasicDBObject("$multiply", Arrays.asList("$" + TJD_S24_FREQUENCYSUM, 2*sampleSize)),
-                    sampleSize - 1
-                )),
-                new BasicDBObject("$divide", Arrays.asList("$" + TJD_RES_SEGREGATINGSITES, a1))
-            )),
-            new BasicDBObject("$sqrt", new BasicDBObject("$abs", new BasicDBObject("$add", Arrays.asList(
+        // ── Compute Tajima's D ─────────────────────────────────────────────────────────
+        // The $group above produces a document as soon as one variant is matched, even if none is segregating. With sg=0 the variance
+        // term (e1*sg + e2*sg*(sg-1)) is 0, and MongoDB rejects a division by zero: report NaN instead (via $literal, since it can't be
+        // produced by a computed $divide), consistent with the caller's chunk==null -> NaN handling for empty intervals.
+        Object varianceTerm = new BasicDBObject("$sqrt", new BasicDBObject("$abs", new BasicDBObject("$add", Arrays.asList(
                 new BasicDBObject("$multiply", Arrays.asList(e1, "$" + TJD_RES_SEGREGATINGSITES)),
                 new BasicDBObject("$multiply", Arrays.asList(
-                    new BasicDBObject("$multiply", Arrays.asList(e2, "$" + TJD_RES_SEGREGATINGSITES)),
-                    new BasicDBObject("$subtract", Arrays.asList("$" + TJD_RES_SEGREGATINGSITES, 1))
+                        new BasicDBObject("$multiply", Arrays.asList(e2, "$" + TJD_RES_SEGREGATINGSITES)),
+                        new BasicDBObject("$subtract", Arrays.asList("$" + TJD_RES_SEGREGATINGSITES, 1))
                 ))
-            ))))
-        )));
-        pipeline.add(new BasicDBObject("$project", finalProject));
+        ))));
 
-        return pipeline;
+        Object tajimaDExpr = new BasicDBObject("$cond", new BasicDBObject()
+                .append("if", new BasicDBObject("$eq", Arrays.asList("$" + TJD_RES_SEGREGATINGSITES, 0)))
+                .append("then", new BasicDBObject("$literal", Double.NaN))
+                .append("else", new BasicDBObject("$divide", Arrays.asList(
+                        new BasicDBObject("$subtract", Arrays.asList(
+                                new BasicDBObject("$divide", Arrays.asList(
+                                        new BasicDBObject("$multiply", Arrays.asList("$" + TJD_S24_FREQUENCYSUM, 2*sampleSize)),
+                                        sampleSize - 1
+                                )),
+                                new BasicDBObject("$divide", Arrays.asList("$" + TJD_RES_SEGREGATINGSITES, a1))
+                        )),
+                        varianceTerm
+                ))));
+
+        BasicDBObject finalProject = new BasicDBObject();
+        finalProject.put(TJD_RES_SEGREGATINGSITES, 1);
+        finalProject.put(TJD_RES_TAJIMAD, tajimaDExpr);
+        stages.add(new BasicDBObject("$project", finalProject));
+
+        LOG.debug("Tajima's D stages " + stages);
+        return stages;
     }
 
-    private List<BasicDBObject> buildMafQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
-//      System.err.println("MAF : " + gdr.getAllCallSetIds().stream().map(t -> t.size()).toList());
+    /**
+     * MAF (biallelic variants only) pools all groups into a single population. For each interval, sums the per-variant (folded) MAF as a
+     * percentage ("t"), and counts the variants that have any genotype ("n").
+     */
+    private static List<BasicDBObject> buildMafStages(ChartRunScope scope, ChartMaterial material) {
+        List<BasicDBObject> stages = buildGroupGenotypeStages(scope, material.pooled(), material.callsetsByEntity);
 
-        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
-        MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
+        // f = 100 × altAlleles / totalAlleles, null if no allele was called
+        Object freqExpr = letExpr(new BasicDBObject("gt", pooledGenotypes()),
+                letExpr(new BasicDBObject("altAlleles", altAlleleCountExpr("$$gt")).append("totalAlleles", alleleCountExpr("$$gt")),
+                        condExpr(new BasicDBObject("$eq", Arrays.asList("$$totalAlleles", 0)), null,
+                                new BasicDBObject("$divide", Arrays.asList(new BasicDBObject("$multiply", Arrays.asList("$$altAlleles", 100)), "$$totalAlleles")))));
+        stages.add(new BasicDBObject("$project", new BasicDBObject("f", freqExpr)));
 
-        List<GenotypingProject> genotypingProjects = mongoTemplate.find(new Query(Criteria.where("_id").in(projIDs)), GenotypingProject.class);
-        Integer[] ploidyLevels = genotypingProjects.stream().map(pj -> pj.getPloidyLevel()).distinct().toArray(Integer[]::new);
-        if (ploidyLevels.length > 1)
-            throw new Exception("Inconsistent ploidy levels among projects " + info[1] + " in database " + info[0]);
-        HashSet<String> selectedMaterial = new HashSet<String>();
-        List<List<String>> callsetIds = gdr.getAllCallSetIds();
-        for (int i = 0; i < callsetIds.size(); i++)
-            selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
+        Object fCalled = new BasicDBObject("$ne", Arrays.asList("$f", null));
+        stages.add(new BasicDBObject("$group", new BasicDBObject("_id", null)
+                .append("n", new BasicDBObject("$sum", condExpr(fCalled, 1, 0)))
+                .append("t", new BasicDBObject("$sum", condExpr(fCalled, condExpr(new BasicDBObject("$lte", Arrays.asList("$f", 50)), "$f", new BasicDBObject("$subtract", Arrays.asList(100, "$f"))), 0)))));
 
-        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
-        if (!workWithSamples)
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
-        else 
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
-        int intervalSize = Math.max(1, (int) ((gdr.getDisplayedRangeMax() - gdr.getDisplayedRangeMin()) / gdr.getDisplayedRangeIntervalCount()));
-        List<Long> intervalBoundaries = new ArrayList<Long>();
-        for (int i = 0; i < gdr.getDisplayedRangeIntervalCount(); i++)
-            intervalBoundaries.add(gdr.getDisplayedRangeMin() + (i*intervalSize));
-        intervalBoundaries.add(gdr.getDisplayedRangeMax() + 1);
-
-        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true, fGotMultiCallSetIndividuals, workWithSamples);
-
-        DBObject gtArray;
-        if (fGotMultiCallSetIndividuals)
-        	gtArray = new BasicDBObject("$map", new BasicDBObject("input", new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S5_SPKEYVAL)).append("as", "cs").append("in", "$$cs.v." + TJD_S18_GENOTYPE));
-        else
-        	gtArray = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals);
-        	
-        BasicDBObject vars = new BasicDBObject(TJD_S18_GENOTYPE, gtArray);
-        BasicDBObject in = new BasicDBObject();
-        BasicDBObject subIn = new BasicDBObject();
-        
-        BasicDBObject inObj = new BasicDBObject("$add", Arrays.asList(1, new BasicDBObject("$cmp", Arrays.asList("$$g", ploidyLevels[0] == 1 ? "1" : "0/1"))));
-        in.put("a", new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", inObj))));
-        in.put("m", new BasicDBObject("$subtract", Arrays.asList(individualOrSampleToCallSetListMap.size(), new BasicDBObject("$sum", new BasicDBObject("$map", new BasicDBObject("input", "$$gt").append("as", "g").append("in", new BasicDBObject("$max", Arrays.asList(0, new BasicDBObject("$cmp", Arrays.asList("$$g", null))))))))));
-
-        BasicDBList condList = new BasicDBList(), divideList = new BasicDBList();
-        condList.add(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}));
-        condList.add(null);
-        condList.add(new BasicDBObject("$subtract", new Object[] {individualOrSampleToCallSetListMap.size(), "$$m"}));
-        divideList.add(new BasicDBObject("$multiply", new Object[] {"$$a", 50}));
-        divideList.add(new BasicDBObject("$cond", condList));
-
-        subIn.put("f", new BasicDBObject("$divide", divideList));
-        subIn.put("n", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$eq", new Object[] {"$$m", individualOrSampleToCallSetListMap.size()}), 0, 1)));
-
-        BasicDBObject subVars = in;
-        BasicDBObject subLet = new BasicDBObject("vars", subVars);
-        subLet.put("in", subIn);
-        in = new BasicDBObject("$let", subLet);
-
-        BasicDBObject let = new BasicDBObject("vars", vars);
-        let.put("in", in);
-        
-        Document projectionFields = new Document();
-        projectionFields.put("r", new BasicDBObject("$let", let));
-        pipeline.add(new BasicDBObject("$project", projectionFields));
-        
-        BasicDBObject intervalGroup = new BasicDBObject();  // prepare sum of frequencies + number of variants accounted for, so average can be calculated just by dividing
-        intervalGroup.put("_id", null);
-        intervalGroup.put("n", new BasicDBObject("$sum", "$r.n"));
-        intervalGroup.put("t", new BasicDBObject("$sum", new BasicDBObject("$cond", Arrays.asList(new BasicDBObject("$lte", new Object[] {"$r.f", 50}), "$r.f", new BasicDBObject("$subtract", new Object[] {100, "$r.f"})))));
-        pipeline.add(new BasicDBObject("$group", intervalGroup));
-
-        return pipeline;
+        LOG.debug("MAF stages " + stages);
+        return stages;
     }
-    
+
     public Map<Long, Float> selectionMissingData(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
@@ -1225,55 +1176,41 @@ public class VisualizationService {
 		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
-
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
-        {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+        final ChartVariantSource source = openChartVariantSource(gdr, info[0], mongoTemplate, progress);
+        if (source == null)
             return null;
-        }
 
-        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
-        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
-        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
-        final boolean useTempColl = (nTempVarCount != 0);
-        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
         final Map<Long, Float> result = new ConcurrentHashMap<>();
+        if (!ensureChartRange(gdr, source, progress, "selectionMissingData"))
+            return result;
 
-        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionMissingData: Unable to find default position range, either there are no results in the current selection for this sequence, or results are in sync with interface filters (in which case, try re-applying filters).");
-                return result;
-            }
-        
-        List<BasicDBObject> baseQuery = buildMissingDataQuery(gdr, useTempColl, workWithSamples);
+        ChartMaterial material = getChartMaterial(gdr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        final List<BasicDBObject> missingDataStages = buildMissingDataStages(scope, material);
+
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gdr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
         		result.put(intervalEntry.getKey(), Float.NaN);
         		continue;
         	}
 
-            List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
 
-                    Document chunk = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true).first();  // There's only one interval per query
+                    List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                    Document chunk = tempVariantIds != null && tempVariantIds.isEmpty() ? null : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, false, missingDataStages).first();  // There's only one interval per query
                     if (chunk == null)
                     	result.put(intervalEntry.getKey(), Float.NaN);
-                    else {              
-	                    int totalNonMissing = chunk.getInteger("totalNonMissing");
-	                    int totalPossibleCalls = chunk.getInteger("totalPossibleCalls");
-	                    int totalMissingCalls  = totalPossibleCalls - totalNonMissing;
+                    else {
+	                    long totalNonMissing = ((Number) chunk.get("totalNonMissing")).longValue();
+	                    long totalPossibleCalls = ((Number) chunk.get("totalPossibleCalls")).longValue();
+	                    long totalMissingCalls  = totalPossibleCalls - totalNonMissing;
 	                    result.put(intervalEntry.getKey(), totalPossibleCalls == 0 ? 0 : (float) totalMissingCalls / totalPossibleCalls * 100);
                     }
                     progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
@@ -1302,219 +1239,42 @@ public class VisualizationService {
     }
 
     /**
-     * Builds aggregation pipeline to calculate missing data percentage
-     * Missing data is defined as when the genotype field is null or empty
-     * 
-     * @param gdr the density request containing query parameters
-     * @param useTempColl whether to use a temporary collection
-     * @param workWithSamples whether to work with samples or individuals
-     * @return pipeline stages for missing data calculation
-     * @throws Exception if an error occurs
+     * Missing data (whatever the ploidy or number of alleles) pools all groups into a single population: sums, over the interval's variants,
+     * the number of individuals (or samples) that have a genotype, and compares it with the number of possible calls, i.e. variants ×
+     * individuals (including any that has no callset in the projects, which is always missing).
      */
-    private List<BasicDBObject> buildMissingDataQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
-        // -------------------- Extract module and project IDs --------------------
-        String[] info = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(Integer::parseInt).toList();
+    private static List<BasicDBObject> buildMissingDataStages(ChartRunScope scope, ChartMaterial material) {
+        List<BasicDBObject> stages = buildGroupGenotypeStages(scope, material.pooled(), material.callsetsByEntity);
+        stages.add(new BasicDBObject("$group", new BasicDBObject("_id", null)
+                .append("totalNonMissing", new BasicDBObject("$sum", new BasicDBObject("$size", pooledGenotypes())))
+                .append("variantCount", new BasicDBObject("$sum", 1))));
+        stages.add(new BasicDBObject("$project", new BasicDBObject("totalNonMissing", 1)
+                .append("totalPossibleCalls", new BasicDBObject("$multiply", Arrays.asList("$variantCount", material.entityCount)))));
 
-        // -------------------- Determine all individuals/samples to consider --------------------
-        HashSet<String> selectedMaterial = new HashSet<>();
-        List<List<String>> callsetIds = gdr.getAllCallSetIds();
-        for (int i = 0; i < callsetIds.size(); i++) {
-            List<String> currentCallsetIds = callsetIds.get(i);
-            if (currentCallsetIds.isEmpty()) {
-                if (workWithSamples) {
-                    selectedMaterial.addAll(MgdbDao.getProjectSamples(info[0], projIDs));
-                } else {
-                    selectedMaterial.addAll(MgdbDao.getProjectIndividuals(info[0], projIDs));
-                }
-            } else {
-                selectedMaterial.addAll(currentCallsetIds.stream()
-                        .map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR)))
-                        .collect(Collectors.toSet()));
-            }
-        }
-        final int totalIndividuals = selectedMaterial.size(); // known universe
-
-        // -------------------- Build mapping individual/sample -> callset IDs --------------------
-        HashMap<String, List<Callset>> individualOrSampleToCallSetListMap = new HashMap<>();
-        if (!workWithSamples) {
-            individualOrSampleToCallSetListMap.putAll(
-                    MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
-        } else {
-            individualOrSampleToCallSetListMap.putAll(
-                    MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));
-        }
-
-        // -------------------- Build allowed keys for filtering $sp --------------------
-        Set<String> allowedKeySet = new HashSet<>();
-        for (Map.Entry<String, List<Callset>> entry : individualOrSampleToCallSetListMap.entrySet())
-            if (entry.getValue().size() > 1)
-            	allowedKeySet.add(entry.getKey());
-            else
-            	allowedKeySet.add(String.valueOf(entry.getValue().get(0).getId()));
-
-        // -------------------- Start building aggregation pipeline --------------------
-        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, true,
-                individualOrSampleToCallSetListMap.values().stream().anyMatch(spList -> spList.size() > 1),
-                workWithSamples);
-        
-        // -------------------- $project: count non-missing individuals --------------------
-        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());	// when true we are sure there is only data for the involved bio-entities
-        // Every selected individual/sample must be counted against the full population regardless
-        // of whether buildGenotypeDataQuery's reconstructed "sp" actually carries an entry for them
-        // (a callset whose run never touched this variant, or whose multiple callsets disagreed and
-        // got weeded out, is otherwise silently absent from $objectToArray("$sp") - which excludes
-        // it from both numerator AND denominator instead of correctly counting it as missing).
-        // getFullPathToGenotypes builds one literal dotted-path per selected individual regardless of
-        // callset count ("$sp.<callsetId or individualId>.gt"), which evaluates to null for an absent
-        // key just as it does for an explicit null value - the same dense/pooled semantics the
-        // single-callset case already relied on.
-        String gtFieldPathToCheck = "$$s";
-        DBObject cond = new BasicDBObject("$and", Arrays.asList(new BasicDBObject("$ne", Arrays.asList(new BasicDBObject("$type", gtFieldPathToCheck), "missing")), new BasicDBObject("$ne", Arrays.asList(gtFieldPathToCheck, null))));
-        DBObject filter =
-            new BasicDBObject("$filter",
-                new BasicDBObject("input", getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals))
-                    .append("as", "s")
-                    .append("cond", cond)
-            );
-        BasicDBObject projectStage = new BasicDBObject();
-        projectStage.put("_id", 1);
-        projectStage.put("nonMissingCount", new BasicDBObject("$size", filter)); // per-variant metric
-        pipeline.add(new BasicDBObject("$project", projectStage));
-
-        // -------------------- $group: aggregate across variants --------------------
-        BasicDBObject groupStage = new BasicDBObject();
-        groupStage.put("_id", null);
-        groupStage.put("totalNonMissing", new BasicDBObject("$sum", "$nonMissingCount"));
-        groupStage.put("variantCount", new BasicDBObject("$sum", 1));
-        pipeline.add(new BasicDBObject("$group", groupStage));
-
-        // -------------------- Final $project: compute totals and percentages --------------------
-        BasicDBObject finalStage = new BasicDBObject();
-        finalStage.put("totalPossibleCalls", new BasicDBObject("$multiply", Arrays.asList("$variantCount", totalIndividuals)));
-
-        // total missing = totalIndividuals * variantCount − totalNonMissing
-        finalStage.put("totalMissingCalls",
-                new BasicDBObject("$subtract", Arrays.asList(
-                        new BasicDBObject("$multiply", Arrays.asList("$variantCount", totalIndividuals)),
-                        "$totalNonMissing"
-                ))
-        );
-
-        finalStage.put("totalNonMissing", 1);
-        pipeline.add(new BasicDBObject("$project", finalStage));
-
-//        System.out.println(pipeline);
-        
-        return pipeline;
+        LOG.debug("Missing data stages: " + stages);
+        return stages;
     }
 
-    private static final String HET_S14_POPULATIONGENOTYPES = "pg";
-    private static final String HET_S15_POPULATION = "pp";
     private static final String HET_S16_SAMPLESIZE = "ss";
-    private static final String HET_S17_GENOTYPE = "gt";
-    private static final String HET_S18_ISHETEROZYGOTE = "ht";
-
     private static final String HET_RES_HETEROZYGOSITY = "he";
     private static final String HET_RES_POPULATIONS = "ps";
 
     /**
-     * Builds aggregation pipeline to calculate heterozygosity rate across populations
-     * Heterozygosity is the proportion of heterozygous genotypes per variant
-     * 
-     * @param gdr the density request containing query parameters
-     * @param useTempColl whether to use a temporary collection
-     * @param workWithSamples whether to work with samples or individuals
-     * @return pipeline stages for heterozygosity calculation
-     * @throws Exception if an error occurs
+     * Heterozygosity (whatever the ploidy or number of alleles) pools all groups into a single population: for each variant, the proportion
+     * of heterozygous genotypes in that population, as {ps: [{ss: <called genotypes>, he: <proportion>}]}, ps being empty if none was called.
      */
-    private List<BasicDBObject> buildHeterozygosityQuery(MgdbChartRequest gdr, boolean useTempColl, boolean workWithSamples) throws Exception {
-        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gdr.getVariantSetId());
-        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
+    private static List<BasicDBObject> buildHeterozygosityStages(ChartRunScope scope, ChartMaterial material) {
+        List<BasicDBObject> stages = buildGroupGenotypeStages(scope, material.pooled(), material.callsetsByEntity);
+        Object populations = letExpr(new BasicDBObject("gt", pooledGenotypes()),
+                letExpr(new BasicDBObject("ss", new BasicDBObject("$size", "$$gt")),
+                        condExpr(new BasicDBObject("$eq", Arrays.asList("$$ss", 0)), new BasicDBObject("$literal", Collections.emptyList()),
+                                Arrays.asList(new BasicDBObject(HET_S16_SAMPLESIZE, "$$ss").append(HET_RES_HETEROZYGOSITY, new BasicDBObject("$divide", Arrays.asList(heterozygousCountExpr("$$gt"), "$$ss")))))));
+        stages.add(new BasicDBObject("$project", new BasicDBObject("_id", 1).append(HET_RES_POPULATIONS, populations)));
 
-        HashSet<String> selectedMaterial = new HashSet<String>();
-        List<List<String>> callsetIds = gdr.getAllCallSetIds();
-        for (int i = 0; i < callsetIds.size(); i++)
-            selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-
-        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
-        if (!workWithSamples)
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
-        else 
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
-
-        boolean fGotMultiCallSetIndividuals = (individualOrSampleToCallSetListMap.values().stream().filter(spList -> spList.size() > 1).findFirst().isPresent());
-        List<BasicDBObject> pipeline = buildGenotypeDataQuery(gdr, useTempColl, individualOrSampleToCallSetListMap, false, fGotMultiCallSetIndividuals, workWithSamples);
-
-        // Stage: Get populations genotypes        
-        DBObject gtArray;
-        if (fGotMultiCallSetIndividuals)
-        	gtArray = new BasicDBObject("$map", new BasicDBObject("input", new BasicDBObject("$objectToArray", "$" + GENOTYPE_DATA_S5_SPKEYVAL)).append("as", "cs").append("in", "$$cs.v." + TJD_S18_GENOTYPE));
-        else
-        	gtArray = getFullPathToGenotypes(selectedMaterial, individualOrSampleToCallSetListMap, fGotMultiCallSetIndividuals);
-
-        BasicDBObject projectGenotypes = new BasicDBObject();
-        projectGenotypes.put("_id", 1);
-        projectGenotypes.put(HET_S14_POPULATIONGENOTYPES, Arrays.asList(gtArray));	// this probably does not need to be an array of arrays
-        pipeline.add(new BasicDBObject("$project", projectGenotypes));
-        
-        // Stage: Split by population
-        BasicDBObject unwindPopulations = new BasicDBObject();
-        unwindPopulations.put("path", "$" + HET_S14_POPULATIONGENOTYPES);
-        unwindPopulations.put("includeArrayIndex", HET_S15_POPULATION);
-        pipeline.add(new BasicDBObject("$unwind", unwindPopulations));
-
-        // Stage: Compute sample size (non-null genotypes)
-        BasicDBObject sampleSizeMapping = new BasicDBObject();
-        sampleSizeMapping.put("input", "$" + HET_S14_POPULATIONGENOTYPES);
-        sampleSizeMapping.put("in", new BasicDBObject("$cmp", Arrays.asList("$$this", null)));
-        BasicDBObject addSampleSize = new BasicDBObject(HET_S16_SAMPLESIZE, new BasicDBObject("$sum", new BasicDBObject("$map", sampleSizeMapping)));
-        pipeline.add(new BasicDBObject("$addFields", addSampleSize));
-
-        // Stage: Unwind by genotype
-        pipeline.add(new BasicDBObject("$unwind", "$" + HET_S14_POPULATIONGENOTYPES));
-
-        // Stage: Eliminate missing genotypes
-        BasicDBObject matchMissing = new BasicDBObject(HET_S14_POPULATIONGENOTYPES, new BasicDBObject("$ne", null));
-        pipeline.add(new BasicDBObject("$match", matchMissing));
-
-        // Stage: Check if heterozygote (for diploid: "0/1", for haploid: impossible so will be false)
-        BasicDBObject addHeterozygote = new BasicDBObject();
-        addHeterozygote.put(HET_S15_POPULATION, 1);
-        addHeterozygote.put(HET_S16_SAMPLESIZE, 1);
-        addHeterozygote.put(HET_S17_GENOTYPE, "$" + HET_S14_POPULATIONGENOTYPES);
-        
-        // Detect heterozygote: split genotype and check if alleles differ
-        BasicDBObject splitGenotype = new BasicDBObject("$split", Arrays.asList("$" + HET_S14_POPULATIONGENOTYPES, "/"));
-        BasicDBList genotypeElements = new BasicDBList();
-        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList(splitGenotype, 0)));
-        genotypeElements.add(new BasicDBObject("$arrayElemAt", Arrays.asList(splitGenotype, 1)));
-        addHeterozygote.put(HET_S18_ISHETEROZYGOTE, new BasicDBObject("$ne", genotypeElements));
-        
-        pipeline.add(new BasicDBObject("$project", addHeterozygote));
-
-        // Stage: Group by variant and population
-        BasicDBObject groupVariantPopulation = new BasicDBObject();
-        BasicDBObject groupVariantPopulationId = new BasicDBObject();
-        groupVariantPopulationId.put("vi", "$_id");
-        groupVariantPopulationId.put("pi", "$" + HET_S15_POPULATION);
-        groupVariantPopulation.put("_id", groupVariantPopulationId);
-        groupVariantPopulation.put(HET_S16_SAMPLESIZE, new BasicDBObject("$first", "$" + HET_S16_SAMPLESIZE));
-        groupVariantPopulation.put(HET_RES_HETEROZYGOSITY, new BasicDBObject("$avg", new BasicDBObject("$toInt", "$" + HET_S18_ISHETEROZYGOTE)));
-        pipeline.add(new BasicDBObject("$group", groupVariantPopulation));
-
-        // Stage: Group by variant, collect populations
-        BasicDBObject groupVariant = new BasicDBObject();
-        groupVariant.put("_id", "$_id.vi");
-        BasicDBObject populationData = new BasicDBObject();
-        populationData.put(HET_S16_SAMPLESIZE, "$" + HET_S16_SAMPLESIZE);
-        populationData.put(HET_RES_HETEROZYGOSITY, "$" + HET_RES_HETEROZYGOSITY);
-        groupVariant.put(HET_RES_POPULATIONS, new BasicDBObject("$push", populationData));
-        pipeline.add(new BasicDBObject("$group", groupVariant));
-
-        return pipeline;
+        LOG.debug("Heterozygosity stages: " + stages);
+        return stages;
     }
-    
+
     public Map<Long, Float> selectionHeterozygosity(MgdbChartRequest gdr, String token, boolean workWithSamples) throws Exception {
         long before = System.currentTimeMillis();
 
@@ -1527,63 +1287,45 @@ public class VisualizationService {
 		    });
 
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gdr, true);
-
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gdr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gdr, false).size() > 0 && nTempVarCount == 0)
-        {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+        final ChartVariantSource source = openChartVariantSource(gdr, info[0], mongoTemplate, progress);
+        if (source == null)
             return null;
-        }
 
-        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
-        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
-        final String vrdCollName = mongoTemplate.getCollectionName(VariantRunData.class);
-        final boolean useTempColl = (nTempVarCount != 0);
-        final String usedVarCollName = useTempColl ? tmpVarColl.getNamespace().getCollectionName() : vrdCollName;
         final Map<Long, Float> result = new ConcurrentHashMap<>();
+        if (!ensureChartRange(gdr, source, progress, "selectionHeterozygosity"))
+            return result;
 
-        if (gdr.getDisplayedRangeMin() == null || gdr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gdr, useTempColl ? usedVarCollName : null)) {
-                progress.setError("selectionHeterozygosity: Unable to find default position range, either there are no results in the current selection for this sequence, or results are not in sync with interface filters (in which case, try re-applying filters).");
-                return result;
-            }
-
-        List<BasicDBObject> baseQuery = buildHeterozygosityQuery(gdr, useTempColl, workWithSamples);
+        ChartMaterial material = getChartMaterial(gdr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        final List<BasicDBObject> heterozygosityStages = buildHeterozygosityStages(scope, material);
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, progress.getProcessId());
 
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(useTempColl ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gdr.getDisplayedRangeIntervalCount(), Arrays.asList(gdr.getDisplayedSequence()), gdr.getDisplayedVariantType(), gdr.getDisplayedRangeMin(), gdr.getDisplayedRangeMax(), !useTempColl ? variantQueryDBList : null, precheckCollection);
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gdr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
         		result.put(intervalEntry.getKey(), Float.NaN);
         		continue;
         	}
 
-        	List<BasicDBObject> windowQuery = new ArrayList<BasicDBObject>(baseQuery);
-            windowQuery.set(0, new BasicDBObject("$match", intervalEntry.getValue()));
-
             Thread t = new Thread() {
                 public void run() {
                     if (progress.isAborted())
                         return;
 
-                    AggregateIterable<Document> queryResult = mongoTemplate.getCollection(usedVarCollName).aggregate(windowQuery).allowDiskUse(true);
+                    List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                    Iterator<Document> it = tempVariantIds != null && tempVariantIds.isEmpty() ? Collections.emptyIterator() : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, false, heterozygosityStages).iterator();
 
                     if (progress.isAborted())
                         return;
 
                     // Collect all heterozygosity values across all variants and populations in this interval
                     List<Double> allHetValues = new ArrayList<>();
-                    
-                    Iterator<Document> it = queryResult.iterator();
                     while (it.hasNext()) {
                         Document variantResult = it.next();
                         List<Document> populations = variantResult.getList(HET_RES_POPULATIONS, Document.class);
-                        
+
                         if (populations != null)
                             for (Document popData : populations) {
                                 Object hetObj = popData.get(HET_RES_HETEROZYGOSITY);
@@ -1594,10 +1336,10 @@ public class VisualizationService {
                                 }
                             }
                     }
-                    
+
                     // Calculate average heterozygosity across all populations for this interval
                     result.put(intervalEntry.getKey(), allHetValues.isEmpty() ? Float.NaN : (float) allHetValues.stream().mapToDouble(Double::doubleValue).average().orElse(Double.NaN));
-                    
+
                     progress.setCurrentStepProgress((short) result.size() * 100 / gdr.getDisplayedRangeIntervalCount());
                     intervalEntry.setValue(null); // help GC
                 }
@@ -1623,31 +1365,11 @@ public class VisualizationService {
 
         return new TreeMap<>(result);
     }
-    
-    private BasicDBList getFullPathToGenotypes(Collection<String> selectedMaterial, Map<String, List<Callset>> individualOrSampleToCallSetListMap, boolean fGotMultiCallSetIndividuals) {
-        BasicDBList result = new BasicDBList();
-        Iterator<String> indIt = selectedMaterial.iterator();
-        while (indIt.hasNext()) {
-            String individualOrSample = indIt.next(), materialRefToUse = null;
-            List<Callset> callSets = individualOrSampleToCallSetListMap.get(individualOrSample);
-            // An individual/sample selected by the caller may have no callset at all for the
-            // project(s)/run(s) currently in scope (e.g. a stale cross-project selection) - fall
-            // back to its own id, same as the multi-callset case, so the resulting path simply
-            // resolves to nothing in "sp" instead of throwing, correctly reading back as missing.
-           	materialRefToUse = callSets != null && callSets.size() == 1 ? "" + callSets.get(0).getId() : individualOrSample;
-            String pathToGT = materialRefToUse + "." + TJD_S18_GENOTYPE;
-            String fullPathToGT = "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES/* + (int) ((individualSample.getId() - 1) / 100)*/ + "." + pathToGT;
-            result.add(fullPathToGT);
-        }
-        return result;
-    }
 
     public Map<Long, Integer> selectionVcfFieldPlotData(MgdbVcfFieldPlotRequest gvfpr, String token, boolean workWithSamples) throws Exception {
-//      System.err.println(gvfpr.getVcfField() + " : " + gvfpr.getAllCallSetIds().stream().map(t -> t.size()).toList());
-
         long before = System.currentTimeMillis();
 
-        String info[] = Helper.getInfoFromId(gvfpr.getVariantSetId(), 2);
+        String info[] = Helper.extractModuleAndProjectIDsFromVariantSetIds(gvfpr.getVariantSetId());
         final ProgressIndicator progress = Optional.ofNullable(ProgressIndicator.get(token))
 		    .orElseGet(() -> {
 		    	ProgressIndicator pi = new ProgressIndicator(token, new String[] { "Calculating plot data for " + gvfpr.getVcfField() +  " field regarding " + (gvfpr.getDisplayedVariantType() != null ? gvfpr.getDisplayedVariantType() + " " : "") + "variants on sequence " + gvfpr.getDisplayedSequence() });
@@ -1655,46 +1377,34 @@ public class VisualizationService {
 		    	return pi;
 		    });
 
-        Collection<Integer> projIDs = Arrays.stream(info[1].split(",")).map(pi -> Integer.parseInt(pi)).toList();
         final MongoTemplate mongoTemplate = MongoTemplateManager.get(info[0]);
-        MongoCollection<Document> tmpVarColl = MongoTemplateManager.getTemporaryVariantCollection(info[0], AbstractTokenManager.readToken(gvfpr.getRequest()), false, false, false);
-        long nTempVarCount = mongoTemplate.count(new Query(), tmpVarColl.getNamespace().getCollectionName());
-        
-        VariantQueryWrapper varQueryWrapper = VariantQueryBuilder.buildVariantDataQuery(gvfpr, true);
-        Collection<BasicDBList> variantDataQueries = nTempVarCount == 0 ? varQueryWrapper.getVariantRunDataQueries() : varQueryWrapper.getVariantDataQueries();
-        final BasicDBList variantQueryDBList = variantDataQueries.size() == 1 ? variantDataQueries.iterator().next() : new BasicDBList();
-
-        if (VariantQueryBuilder.getGroupsForWhichToFilterOnGenotypingOrAnnotationData(gvfpr, false).size() > 0 && nTempVarCount == 0) {
-            progress.setError(MgdbDao.MESSAGE_TEMP_RECORDS_NOT_FOUND);
+        final ChartVariantSource source = openChartVariantSource(gvfpr, info[0], mongoTemplate, progress);
+        if (source == null)
             return null;
-        }
 
-        final String mainVarCollName = mongoTemplate.getCollectionName(VariantData.class), usedVarCollName = nTempVarCount == 0 ? mainVarCollName : tmpVarColl.getNamespace().getCollectionName();
         final ConcurrentHashMap<Long, Integer> result = new ConcurrentHashMap<Long, Integer>();
-
         if (gvfpr.getDisplayedRangeMin() == null || gvfpr.getDisplayedRangeMax() == null)
-            if (!findDefaultRangeMinMax(gvfpr, nTempVarCount > 0 ? usedVarCollName : null))
+            if (!findDefaultRangeMinMax(gvfpr, source.temporaryCollectionName()))
                 return result;
 
-        final ProgressIndicator finalProgress = progress;
-
-        HashSet<String> selectedMaterial = new HashSet<String>();
-        List<List<String>> callsetIds = gvfpr.getAllCallSetIds();
-        for (int i = 0; i < callsetIds.size(); i++)
-            selectedMaterial.addAll(callsetIds.get(i).isEmpty() ? (workWithSamples ? MgdbDao.getProjectSamples(info[0], projIDs) : MgdbDao.getProjectIndividuals(info[0], projIDs)) : callsetIds.get(i).stream().map(csi -> csi.substring(1 + csi.lastIndexOf(Helper.ID_SEPARATOR))).collect(Collectors.toSet()));
-
-        TreeMap<String, List<Callset>> individualOrSampleToCallSetListMap = new TreeMap<>();
-        if (!workWithSamples)
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsByIndividualForProjects(info[0], projIDs, selectedMaterial));
-        else 
-            individualOrSampleToCallSetListMap.putAll(MgdbDao.getCallsetsBySampleForProjects(info[0], projIDs, selectedMaterial));   
+        // each involved callset's value of the field, in each run's document (summing over them needs no merging)
+        ChartMaterial material = getChartMaterial(gvfpr, workWithSamples);
+        final ChartRunScope scope = getChartRunScope(info[0], mongoTemplate, material.callsetsByEntity);
+        List<Integer> callsetIds = material.callsetsByEntity.values().stream().flatMap(List::stream).map(Callset::getId).distinct().toList();
+        Object values = callsetIds.isEmpty() ? new BasicDBObject("$literal", Collections.emptyList()) : callsetValuesExpr(callsetIds, SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField(), scope);
+        Object calledValues = new BasicDBObject("$filter", new BasicDBObject("input", values).append("cond", new BasicDBObject("$ne", Arrays.asList("$$this", null))));
+        final List<BasicDBObject> stages = Arrays.asList(
+                new BasicDBObject("$project", new BasicDBObject("r", letExpr(new BasicDBObject("values", calledValues),
+                        new BasicDBObject("valSum", new BasicDBObject("$sum", "$$values")).append("valCount", new BasicDBObject("$size", "$$values"))))),
+                new BasicDBObject("$group", new BasicDBObject("_id", null)
+                        .append("valSum", new BasicDBObject("$sum", new BasicDBObject("$toInt", "$r.valSum")))
+                        .append("valCount", new BasicDBObject("$sum", "$r.valCount"))));
 
         ExecutorService executor = MongoTemplateManager.getExecutor(info[0]);
         String taskGroup = "vcfField_" + gvfpr.getVcfField() + "_" + progress.getProcessId();
         final AdaptiveTaskSubmitter submitter = createChartSubmitter(executor, taskGroup);
 
-        MongoCollection<Document> precheckCollection = mongoTemplate.getCollection(nTempVarCount > 0 ? usedVarCollName : MongoTemplateManager.getMongoCollectionName(VariantData.class));
-        HashMap<Long, BasicDBObject> intervalQueries = getIntervalQueries(gvfpr.getDisplayedRangeIntervalCount(), Arrays.asList(gvfpr.getDisplayedSequence()), gvfpr.getDisplayedVariantType(), gvfpr.getDisplayedRangeMin(), gvfpr.getDisplayedRangeMax(), nTempVarCount == 0 ? variantQueryDBList : null, precheckCollection);
+        HashMap<Long, BasicDBObject> intervalQueries = getChartIntervalQueries(gvfpr, source, mongoTemplate);
         for (Map.Entry<Long, BasicDBObject> intervalEntry : intervalQueries.entrySet()) {
         	if (intervalEntry.getValue() == null) {
         		result.put(intervalEntry.getKey(), 0);
@@ -1703,45 +1413,17 @@ public class VisualizationService {
 
             Thread t = new Thread() {
                 public void run() {
-                    if (!finalProgress.isAborted())
+                    if (!progress.isAborted())
                     {
-                        List<String> variantsInInterval = mongoTemplate.getCollection(usedVarCollName).find(intervalEntry.getValue()).projection(new BasicDBObject("_id", 1)).collation(Helper.getPositionCollationIfFilteringOnSequence(intervalEntry.getValue())).map(doc -> doc.getString("_id")).into(new ArrayList<>());	// rather than distinct(), which with this collation would merge IDs that only differ by leading zeros  // oddly, it is faster to run a pre-query than to use $lookup
-                        final ArrayList<BasicDBObject> pipeline = new ArrayList<BasicDBObject>();
-
-                        BasicDBList matchList = new BasicDBList();
-                        matchList.add(new BasicDBObject("_id." + VariantRunDataId.FIELDNAME_VARIANT_ID, new BasicDBObject("$in", variantsInInterval)));
-                        if (nTempVarCount == 0 && !variantQueryDBList.isEmpty())
-                            matchList.addAll(variantQueryDBList);
-                        pipeline.add(new BasicDBObject("$match", new BasicDBObject("$and", matchList)));
-
-                        BasicDBObject projectStage = new BasicDBObject("$project", new BasicDBObject("r", new BasicDBObject("$let", new BasicDBObject()
-                                .append("vars", new BasicDBObject("values", new BasicDBObject("$filter", new BasicDBObject()
-                                        .append("input", individualOrSampleToCallSetListMap.values().stream().flatMap(List::stream).map(cs -> "$" + VariantRunData.FIELDNAME_SAMPLEGENOTYPES + "." + cs.getId() + "." + SampleGenotype.SECTION_ADDITIONAL_INFO + "." + gvfpr.getVcfField()).toArray())
-                                        .append("as", "val")
-                                        .append("cond", new BasicDBObject("$ne", Arrays.asList("$$val", null)))
-                                    )))
-                                    .append("in", new BasicDBObject()
-                                        .append("valSum", new BasicDBObject("$sum", "$$values"))
-                                        .append("valCount", new BasicDBObject("$size", "$$values"))
-                                    )
-                                )));
-                        pipeline.add(projectStage);
-                        
-                        BasicDBObject groupStage = new BasicDBObject("$group", new BasicDBObject("_id", null)
-                                .append("valSum", new BasicDBObject("$sum", new BasicDBObject("$toInt", "$r.valSum")))
-                                .append("valCount", new BasicDBObject("$sum", "$r.valCount"))
-                        );
-                        pipeline.add(groupStage);
-                        
-                        Iterator<Document> it = mongoTemplate.getCollection(mongoTemplate.getCollectionName(VariantRunData.class)).aggregate(pipeline).iterator();
-                        if (!it.hasNext())
+                        List<Object> tempVariantIds = source.temporaryVariantIds(intervalEntry.getKey());
+                        Document resultDoc = tempVariantIds != null && tempVariantIds.isEmpty() ? null : source.aggregate(intervalEntry.getValue(), tempVariantIds, scope, false, stages).first();
+                        if (resultDoc == null)
                             result.put(intervalEntry.getKey(), 0);
                         else {
-                            Document resultDoc = it.next();
                             int totalCumulated = Double.valueOf(resultDoc.get("valSum").toString()).intValue();
                             result.put(intervalEntry.getKey(), totalCumulated == 0 ? 0 : (totalCumulated / Double.valueOf(resultDoc.get("valCount").toString()).intValue()));
                         }
-                        finalProgress.setCurrentStepProgress((short) result.size() * 100 / gvfpr.getDisplayedRangeIntervalCount());
+                        progress.setCurrentStepProgress((short) result.size() * 100 / gvfpr.getDisplayedRangeIntervalCount());
                         intervalEntry.setValue(null); // help GC
                     }
                 }
@@ -1749,7 +1431,7 @@ public class VisualizationService {
 
             submitter.submit(t);
         }
-        
+
         try {
             submitter.awaitCompletion();    // wait for all threads before moving to next phase
         }
