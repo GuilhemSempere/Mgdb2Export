@@ -16,7 +16,6 @@
  *******************************************************************************/
 package fr.cirad.mgdb.exporting.individualoriented;
 
-import java.io.BufferedOutputStream;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileOutputStream;
@@ -26,15 +25,12 @@ import java.io.OutputStream;
 import java.text.DecimalFormatSymbols;
 import java.util.ArrayList;
 import java.util.Arrays;
-
 import java.util.Collection;
-import java.util.LinkedHashMap;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Scanner;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.TreeSet;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -50,37 +46,40 @@ import com.traviswheeler.ninja.TreeBuilderBinHeap;
 import com.traviswheeler.ninja.TreeNode;
 
 import fr.cirad.mgdb.exporting.IExportHandler;
+import fr.cirad.mgdb.exporting.markeroriented.EigenstratExportHandler;
 import fr.cirad.mgdb.exporting.tools.ExportManager.ExportOutputs;
 import fr.cirad.mgdb.exporting.tools.dist.JukesCantorDistanceMatrixCalculator;
 import fr.cirad.mgdb.model.mongo.maintypes.Assembly;
 import fr.cirad.mgdb.model.mongo.maintypes.VariantData;
+import fr.cirad.mgdb.model.mongo.subtypes.Callset;
 import fr.cirad.mgdb.model.mongo.subtypes.ReferencePosition;
+import fr.cirad.tools.AlphaNumericComparator;
 import fr.cirad.tools.Helper;
 import fr.cirad.tools.ProgressIndicator;
 import fr.cirad.tools.mgdb.VariantQueryWrapper;
 import fr.cirad.tools.mongo.MongoTemplateManager;
 
 /**
- * The Class JukesCantorNewickTreeExportHandler.
+ * Exports a Jukes-Cantor distance matrix and a neighbour-joining Newick tree, computed from an Eigenstrat data extraction
+ * (see JukesCantorDistanceMatrixCalculator for why this is equivalent to working on a pseudo-alignment of SNP alleles).
  */
-public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler {
+public class JukesCantorExportHandler extends EigenstratExportHandler {
 
 	private int nMaxMissingDataPercentageForIndividuals = 50;
-	private final static Pattern missingAllelePattern = Pattern.compile("[N-]");
-	
+
     private static final Logger LOG = Logger.getLogger(JukesCantorExportHandler.class);
 
-    public static String MATRIX_EXTENSION= "mtx";
+    public static String MATRIX_EXTENSION = "mtx";
     public static String NEWICK_EXTENSION = "nwk";
-    
+
     public JukesCantorExportHandler() {
     }
-    
+
     public JukesCantorExportHandler(int nMaxMissingDataPercentageForIndividuals) {
     	super();
     	this.nMaxMissingDataPercentageForIndividuals = nMaxMissingDataPercentageForIndividuals;
     }
-    
+
     /* (non-Javadoc)
 	 * @see fr.cirad.mgdb.exporting.IExportHandler#getExportFormatName()
      */
@@ -98,115 +97,117 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
     }
 
     @Override
-    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, ExportOutputs exportOutputs, boolean fDeleteSampleExportFilesOnExit, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, String> individualPopulations, Map<String, InputStream> readyToExportFiles) throws Exception {
-		MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
-        int nQueryChunkSize = IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount);
+    public void exportData(OutputStream outputStream, String sModule, Integer nAssemblyId, String sExportingUser, ProgressIndicator progress, String tmpVarCollName, VariantQueryWrapper varQueryWrapper, long markerCount, Map<String, String> markerSynonyms, Map<String, Collection<String>> individualsByPop, boolean workWithSamples, Map<String, HashMap<String, Float>> annotationFieldThresholds, Collection<Callset> callSetsToExport, Collection<String> individualMetadataFieldsToExport, Map<String, InputStream> readyToExportFiles) throws Exception {
+        MongoTemplate mongoTemplate = MongoTemplateManager.get(sModule);
 
-        // save existing warnings into a temp file so we can append to it
+        // Build sorted individual list (same order as the columns of the Eigenstrat genotype file)
+        TreeSet<String> indSet = new TreeSet<>(new AlphaNumericComparator<String>());
+        for (Callset cs : callSetsToExport)
+            indSet.add(workWithSamples ? cs.getSampleId() : cs.getIndividual());
+        List<String> sortedIndividuals = new ArrayList<>(indSet);
+
+        if (progress.isAborted())
+            return;
+
+        // Build variant query
+        Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
+        Document variantQueryForTargetCollection = variantDataQueries.isEmpty() ? new Document() :
+            (tmpVarCollName == null ? new Document("$and", variantDataQueries.iterator().next()) :
+                (varQueryWrapper.getBareQueries().iterator().hasNext() ?
+                    new Document("$and", varQueryWrapper.getBareQueries().iterator().next()) : new Document()));
+
         File warningFile = File.createTempFile("export_warnings_", "");
+        File tempGenoFile = File.createTempFile("eigenstrat_for_jc__", "");
+
         try {
-	        FileOutputStream warningOS = new FileOutputStream(warningFile);
-	        for (File f : exportOutputs.getWarningFiles()) {
-		    	if (f != null && f.length() > 0) {
-		            BufferedReader in = new BufferedReader(new FileReader(f));
-		            String sLine;
-		            while ((sLine = in.readLine()) != null)
-		            	warningOS.write((sLine + "\n").getBytes());
-		            in.close();
-			    	f.delete();
-		    	}
-	        }
-		        
-	        List<String> exportedIndividuals = new ArrayList<>();
-	        for (File indFile : exportOutputs.getGenotypeFiles())
-	            try (Scanner scanner = new Scanner(indFile)) {
-	                exportedIndividuals.add(scanner.nextLine());
-	            }
+            // Write Eigenstrat genotype file
+            ExportOutputs exportOutputs;
+            try (OutputStream genoOS = new FileOutputStream(tempGenoFile)) {
+            	exportOutputs = writeGenotypeFile(genoOS, sModule, nAssemblyId, workWithSamples, annotationFieldThresholds, progress, tmpVarCollName, variantQueryForTargetCollection, markerCount, markerSynonyms, callSetsToExport, individualsByPop);
+            }
 
-	        // Stream sequences to temporary FASTA file
-	        File tmpFastaFile = File.createTempFile("fasta_", ".tmp");
-	        tmpFastaFile.deleteOnExit();
-	        try (BufferedOutputStream fastaOS = new BufferedOutputStream(new FileOutputStream(tmpFastaFile))) {
-	            fastaOS.write(getHeaderlines(exportOutputs.getGenotypeFiles().length, (int) markerCount).getBytes());
-	            writeGenotypeFile(fastaOS, sModule, exportedIndividuals, nQueryChunkSize, markerSynonyms, exportOutputs.getGenotypeFiles(), warningOS, progress);
-	            fastaOS.write(getFooterlines().getBytes());
-	        }
-
-	        progress.moveToNextStep();
-
-	        // Process sequences line by line from temp file
-	        List<String> sequenceNames = new ArrayList<>();
-	        List<String> sequences = new ArrayList<>();
-	        LinkedHashMap<String, String> seqMap = new LinkedHashMap<>();
-	        StringBuilder missingDataWarnings = new StringBuilder();
-
-	        try (BufferedReader reader = new BufferedReader(new FileReader(tmpFastaFile))) {
-	            String line;
-	            String currentName = null;
-	            StringBuilder currentSeq = new StringBuilder();
-	            while ((line = reader.readLine()) != null) {
-	                line = line.trim();
-	                if (line.startsWith(">")) {
-	                    if (currentName != null) {
-	                        processSequence(currentName, currentSeq.toString(), sequenceNames, sequences, seqMap, missingDataWarnings);
+            // Collect warnings from export
+            try (FileOutputStream warningOS = new FileOutputStream(warningFile)) {
+	            for (File f : exportOutputs.getWarningFiles()) {
+	                if (f != null && f.length() > 0) {
+	                    try (BufferedReader in = new BufferedReader(new FileReader(f))) {
+		                    String sLine;
+		                    while ((sLine = in.readLine()) != null)
+		                        warningOS.write((sLine + "\n").getBytes());
 	                    }
-	                    currentName = line.substring(1);
-	                    currentSeq.setLength(0);
-	                } else {
-	                    currentSeq.append(line);
+	                    f.delete();
 	                }
 	            }
-	            if (currentName != null) {
-	                processSequence(currentName, currentSeq.toString(), sequenceNames, sequences, seqMap, missingDataWarnings);
-	            }
-	        }
+            }
 
-	        // Compute distance matrix (upper-triangle safe)
-	        double[][] distanceMatrix = new JukesCantorDistanceMatrixCalculator(sequences).calculate(progress);
+            if (progress.isAborted() || progress.getError() != null)
+            	return;
+
+            progress.moveToNextStep();
+
+            // Read genotypes, leaving out individuals with too much missing data
+            StringBuilder missingDataWarnings = new StringBuilder();
+            List<String> filteredIndividuals = new ArrayList<>();
+            byte[][] genotypeBytes = readGenotypeDataAndFilterByMissingness(tempGenoFile, sortedIndividuals, (int) markerCount, nMaxMissingDataPercentageForIndividuals, filteredIndividuals, missingDataWarnings, progress, "Jukes-Cantor");
+            if (progress.isAborted() || progress.getError() != null)
+            	return;
+
+            if (genotypeBytes == null || filteredIndividuals.size() < 2)
+                throw new Exception("Not enough individuals with sufficient data for Jukes-Cantor calculation.");
+
+            progress.moveToNextStep();
+
+            // Compute distance matrix (upper triangle)
+            double[][] distanceMatrix = new JukesCantorDistanceMatrixCalculator(genotypeBytes, (int) markerCount).calculate(progress);
+            if (distanceMatrix == null || progress.isAborted() || progress.getError() != null)
+                return;
 
 			Assembly assembly = mongoTemplate.findOne(new Query(Criteria.where("_id").is(nAssemblyId)), Assembly.class);
-	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, exportOutputs.getGenotypeFiles().length, exportOutputs.isWorkWithSamples());
-	        ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, exportOutputs);
-	        progress.moveToNextStep();
-	        createMatrixEntry(sequenceNames, exportName, distanceMatrix, zos, progress);
-	        progress.moveToNextStep();
-	        createTreeEntry(sequenceNames, exportName, distanceMatrix, zos);
+	        String exportName = IExportHandler.buildExportName(sModule, assembly, markerCount, sortedIndividuals.size(), workWithSamples);
+            ZipOutputStream zos = IExportHandler.createArchiveOutputStream(outputStream, readyToExportFiles, null);
 
-	        // Add warnings if any
-	        if (progress.getError() == null && !progress.isAborted()) {
-	            if (warningFile.length() > 0 || missingDataWarnings.length() > 0) {
-	                progress.addStep("Adding lines to warning file");
-	                progress.moveToNextStep();
-	                progress.setPercentageEnabled(false);
-	                zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
+            // Add metadata if requested
+            if (individualMetadataFieldsToExport == null || !individualMetadataFieldsToExport.isEmpty())
+                IExportHandler.addMetadataEntryIfAny(sModule + "__" + filteredIndividuals.size() + (workWithSamples ? "sample" : "individual") + "s_metadata.tsv", sModule, sExportingUser, new TreeSet<>(filteredIndividuals), individualMetadataFieldsToExport, zos, (workWithSamples ? "sample" : "individual"), workWithSamples);
 
-	                if (missingDataWarnings.length() > 0)
-	                    zos.write(missingDataWarnings.toString().getBytes());
+            progress.moveToNextStep();
+            createMatrixEntry(filteredIndividuals, exportName, distanceMatrix, zos, progress);
+            progress.moveToNextStep();
+            createTreeEntry(filteredIndividuals, exportName, distanceMatrix, zos);
 
-	                if (warningFile.length() > 0) {
-	                    try (BufferedReader in = new BufferedReader(new FileReader(warningFile))) {
-	                        String sLine;
-	                        int nWarningCount = 0;
-	                        while ((sLine = in.readLine()) != null) {
-	                            zos.write((sLine + "\n").getBytes());
-	                            progress.setCurrentStepProgress(nWarningCount++);
-	                        }
-	                        LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
-	                    }
-	                }
+            // Add warnings if any
+            if (progress.getError() == null && !progress.isAborted()) {
+                if (warningFile.length() > 0 || missingDataWarnings.length() > 0) {
+                    progress.addStep("Adding lines to warning file");
+                    progress.moveToNextStep();
+                    progress.setPercentageEnabled(false);
+                    zos.putNextEntry(new ZipEntry(exportName + "-REMARKS.txt"));
 
-	                zos.closeEntry();
-	            }
-	        }
+                    if (missingDataWarnings.length() > 0)
+                        zos.write(missingDataWarnings.toString().getBytes());
+
+                    if (warningFile.length() > 0) {
+                        try (BufferedReader in = new BufferedReader(new FileReader(warningFile))) {
+                            String sLine;
+                            int nWarningCount = 0;
+                            while ((sLine = in.readLine()) != null) {
+                                zos.write((sLine + "\n").getBytes());
+                                progress.setCurrentStepProgress(nWarningCount++);
+                            }
+                            LOG.info("Number of Warnings for export (" + exportName + "): " + nWarningCount);
+                        }
+                    }
+
+                    zos.closeEntry();
+                }
+            }
 
 	        zos.putNextEntry(new ZipEntry(exportName + ".map"));
 	        String refPosPath = Assembly.getVariantRefPosPath(nAssemblyId);
 	        int nMarkerIndex = 0;
-	        ArrayList<Comparable> unassignedMarkers = new ArrayList<>();
 	    	String refPosPathWithTrailingDot = Assembly.getThreadBoundVariantRefPosPath() + ".";
 	    	Document projectionAndSortDoc = new Document(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_SEQUENCE, 1).append(refPosPathWithTrailingDot + ReferencePosition.FIELDNAME_START_SITE, 1);
-	    	Collection<BasicDBList> variantDataQueries = varQueryWrapper.getVariantDataQueries();
-	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantDataQueries.isEmpty() ? new Document() : (new Document("$and", tmpVarCollName == null ? variantDataQueries.iterator().next() : (varQueryWrapper.getBareQueries().iterator().hasNext() ? varQueryWrapper.getBareQueries().iterator().next() : new BasicDBList()))), projectionAndSortDoc, nQueryChunkSize)) {
+	    	try (MongoCursor<Document> markerCursor = IExportHandler.getMarkerCursorWithCorrectCollation(mongoTemplate.getCollection(tmpVarCollName != null ? tmpVarCollName : mongoTemplate.getCollectionName(VariantData.class)), variantQueryForTargetCollection, projectionAndSortDoc, IExportHandler.computeQueryChunkSize(mongoTemplate, markerCount))) {
 	            progress.addStep("Writing map file");
 	            progress.moveToNextStep();
 		        while (markerCursor.hasNext()) {
@@ -215,57 +216,44 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 		            Long pos = refPos == null || refPos.isEmpty() ? null : ((Number) refPos.get(ReferencePosition.FIELDNAME_START_SITE)).longValue();
 		            String chrom = refPos == null || refPos.isEmpty() ? null : (String) refPos.get(ReferencePosition.FIELDNAME_SEQUENCE);
 	                String markerId = (String) exportVariant.get("_id");
-		            if (chrom == null)
-		            	unassignedMarkers.add(markerId);
 		            String exportedId = markerSynonyms == null ? markerId : markerSynonyms.get(markerId);
 		            zos.write(((chrom == null ? "0" : chrom) + " " + exportedId + " " + 0 + " " + (pos == null ? 0 : pos) + LINE_SEPARATOR).getBytes());
-	
+
 	                progress.setCurrentStepProgress(nMarkerIndex++ * 100 / markerCount);
 		        }
 			}
 	        zos.closeEntry();
-	        
+
 	        IExportHandler.writeZipEntryFromChunkFiles(zos, exportOutputs.getAnnotationFiles(), exportName + ".ann", IExportHandler.VEP_LIKE_HEADER_LINE);
-	        
+
 	        zos.finish();
 	        zos.close();
 	    }
+        catch (OutOfMemoryError oome) {
+            LOG.error("Not enough RAM for Jukes-Cantor calculation", oome);
+            progress.setError("Unable to compute Jukes-Cantor distances (dataset is too large): " + oome.getMessage());
+        }
         finally {
 	        warningFile.delete();
+	        tempGenoFile.delete();
 	    }
 
 	    progress.setPercentageEnabled(true);
 	    progress.setCurrentStepProgress((short) 100);
 	}
-    
-	private void processSequence(String name, String sequence, List<String> sequenceNames, List<String> sequences, Map<String, String> seqMap, StringBuilder missingDataWarnings) {
-		Matcher matcher = missingAllelePattern.matcher(sequence);
-		int missingAlleleCount = 0;
-		while (matcher.find())
-			missingAlleleCount++;
-
-		int missingPercent = missingAlleleCount * 100 / sequence.length();
-		if (missingPercent > nMaxMissingDataPercentageForIndividuals)
-			missingDataWarnings.append("- Excluding individual ").append(name).append(" from NJ export, it has too much missing data: ").append(missingPercent).append("%\n");
-		else {
-			sequenceNames.add(name);
-			sequences.add(sequence);
-			seqMap.put(name, sequence);
-		}
-	}
 
 	protected void createMatrixEntry(List<String> sequenceNames, String exportName, double[][] distanceMatrix, ZipOutputStream zos, ProgressIndicator progress) throws Exception {
 	    zos.putNextEntry(new ZipEntry(exportName + "." + MATRIX_EXTENSION));
-	    java.text.NumberFormat formatter = new java.text.DecimalFormat("#0.000000", new DecimalFormatSymbols(Locale.US)); 
-	    
-	    int n = sequenceNames.size();	    
+	    java.text.NumberFormat formatter = new java.text.DecimalFormat("#0.000000", new DecimalFormatSymbols(Locale.US));
+
+	    int n = sequenceNames.size();
 	    zos.write(("\t" + n).getBytes());	// Write header with number of individuals
-	    
+
 	    // Write complete distance matrix (not just upper triangle)
 	    for (int i = 0; i < n; i++) {
 	        StringBuilder rowBuilder = new StringBuilder();
 	        rowBuilder.append("\n").append(sequenceNames.get(i));
-	        
+
 	        for (int j = 0; j < n; j++) {
 	            double distance;
 	            if (i == j)
@@ -276,13 +264,13 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
 	                distance = distanceMatrix[j][i - j - 1];	// Lower triangle: symmetric to upper triangle
 	            rowBuilder.append(" ").append(formatter.format(distance));
 	        }
-	        
+
 	        zos.write(rowBuilder.toString().getBytes());
-	        
+
 	        if (n > 1000 && i % 500 == 0 && progress != null)	// Update progress for large datasets
 	            progress.setCurrentStepProgress((int) ((i / (double) n) * 100));
 	    }
-	    
+
 	    zos.closeEntry();
 	}
 
@@ -298,29 +286,12 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
         }
 
         StringBuffer sb = new StringBuffer();
-
         TreeBuilderBinHeap tb = new TreeBuilderBinHeap(sequenceNames.toArray(new String[sequenceNames.size()]), intDistanceMatrix);
-
         TreeNode[] nodes = tb.build();
-
-//          nodes[nodes.length-1].rootTreeAt("CR1062");
         nodes[nodes.length - 1].buildTreeString(sb);
 
         zos.putNextEntry(new ZipEntry(exportName + "." + NEWICK_EXTENSION));
-        String treeString = sb.toString() + ";";
-        zos.write(treeString.getBytes());
-
-//          NewickTreeRerooter rerooter = new NewickTreeRerooter();
-//          TreeNode root = rerooter.parseNewick(treeString);
-//          TreeNode newRoot = rerooter.reroot(root, "CX280");
-//          String newNewick = rerooter.toNewick(newRoot);
-//          zos.write(newNewick.getBytes());
-
-//          zos.write(NewickRooter.rootTree(treeString, /* \"IRIS_313-10729\" */ \"CX280\").getBytes());
-//          StringBuffer rootedTreeSB = new StringBuffer();
-//          rootTree(treeString, /* \"IRIS_313-10729\" */ \"CX280\").buildTreeString(rootedTreeSB);
-//          zos.write(rootedTreeSB.toString().getBytes());
-
+        zos.write((sb.toString() + ";").getBytes());
         zos.closeEntry();
     }
 
@@ -329,7 +300,7 @@ public class JukesCantorExportHandler extends FastaPseudoAlignmentExportHandler 
      */
     @Override
     public List<String> getStepList() {
-    	return Arrays.asList(new String[]{"Converting data to FASTA format", "Calculating Jukes-Cantor distance matrix", "Writing matrix to archive", "Building neighbor-joining Newick tree using NINJA algorithm"});
+    	return Arrays.asList(new String[]{"Exporting to Eigenstrat format", "Filtering individuals with missing data", "Calculating Jukes-Cantor distance matrix", "Writing matrix to archive", "Building neighbor-joining Newick tree using NINJA algorithm"});
     }
 
 	@Override

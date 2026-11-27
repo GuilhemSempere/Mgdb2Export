@@ -173,72 +173,7 @@ public class AlleleSharingDistanceExportHandler extends EigenstratExportHandler 
             List<String> keptIndividuals,
             StringBuilder missingDataWarnings,
             ProgressIndicator progress) throws IOException {
-
-        final int nInd = allIndividuals.size();
-
-        byte[][] genotypeAll = new byte[nInd][numMarkers];
-        int[] missingCounts = new int[nInd];
-
-        try (BufferedReader reader = new BufferedReader(new FileReader(genoFile))) {
-            String line;
-            int markerIndex = 0;
-
-            while ((line = reader.readLine()) != null && markerIndex < numMarkers) {
-                line = line.trim();
-                if (line.length() < nInd)
-                    throw new IllegalStateException("Line " + markerIndex + " too short: expected " + nInd + " chars");
-
-                for (int i = 0; i < nInd; i++) {
-                    char c = line.charAt(i);
-                    if (c >= '0' && c <= '2')
-                        genotypeAll[i][markerIndex] = (byte) (c - '0');
-                    else {
-                        genotypeAll[i][markerIndex] = 9;
-                        missingCounts[i]++;
-                    }
-                }
-
-                markerIndex++;
-
-                if (progress != null && markerIndex % 100 == 0) {
-                    int pct = (int) ((markerIndex / (double) numMarkers) * 100);
-                    progress.setCurrentStepProgress(pct);
-
-                    if (progress.isAborted() || progress.getError() != null)
-                        return null;
-                }
-            }
-
-            if (markerIndex != numMarkers)
-                throw new IllegalStateException("Expected " + numMarkers + " markers, got " + markerIndex);
-        }
-
-        // Decide which individuals to keep
-        List<Integer> keptIndices = new ArrayList<>();
-        for (int i = 0; i < nInd; i++) {
-            String ind = allIndividuals.get(i);
-            int missingPct = (int) ((missingCounts[i] * 100.0) / numMarkers);
-
-            if (missingPct > maxMissingPct)
-                missingDataWarnings.append("- Excluding individual ").append(ind).append(" from ASD export, it has too much missing data: ").append(missingPct).append("%\n");
-            else {
-                keptIndices.add(i);
-                keptIndividuals.add(ind);
-            }
-        }
-
-        if (keptIndices.size() < 2)
-            return null;
-
-        // Compact genotype matrix
-        byte[][] genotypeFiltered = new byte[keptIndices.size()][numMarkers];
-        for (int fi = 0; fi < keptIndices.size(); fi++) {
-        	Integer index = keptIndices.get(fi);
-            genotypeFiltered[fi] = genotypeAll[index];
-            genotypeAll[index] = null;	// save memory
-        }
-
-        return genotypeFiltered;
+    	return readGenotypeDataAndFilterByMissingness(genoFile, allIndividuals, numMarkers, maxMissingPct, keptIndividuals, missingDataWarnings, progress, "ASD");
     }
 
     @Override
